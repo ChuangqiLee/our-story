@@ -271,6 +271,7 @@ main[hidden] { display: none; }
   position: relative; border-radius: 22px; overflow: hidden; border: 1px solid var(--line);
   background: radial-gradient(120% 90% at 50% 40%, rgba(255, 125, 156, .07), transparent 60%), rgba(255, 238, 245, .02);
 }
+.atlas-stage { position: relative; }
 .atlas-map canvas { display: block; width: 100%; aspect-ratio: 16 / 9; max-height: 74vh; cursor: pointer; }
 .atlas-ctl {
   position: absolute; left: 14px; top: 14px; display: flex; gap: 2px; padding: 4px; border-radius: 999px;
@@ -839,6 +840,8 @@ body.is-locked .nav { opacity: 0; pointer-events: none; }
 .km-play[aria-pressed="true"] .ic-pause { display: block; }
 .km-play[aria-pressed="false"] { animation: nudge 2.6s ease-in-out infinite; }
 @keyframes nudge { 50% { box-shadow: 0 0 0 6px rgba(255, 125, 156, .1); } }
+.atlas-note { display: flex; align-items: baseline; gap: 12px; margin: 0; padding: 14px 18px 15px; border-top: 1px dashed rgba(255, 125, 156, .28); background: rgba(11, 9, 16, .35); font: 14px/1.75 var(--zh-serif); color: var(--ink-2); }
+.atlas-note b { flex: none; padding: 1px 10px; border-radius: 999px; border: 1px solid rgba(255, 125, 156, .45); font: 500 12.5px/1.7 var(--zh-serif); color: var(--rose); }
 
 /* missing you */
 .miss-btn {
@@ -927,6 +930,8 @@ body:not(.is-locked) .miss-btn { opacity: 1; pointer-events: auto; }
   .km-play { padding: 7px 12px 7px 10px; font-size: 13px; }
   .atlas-now { right: 12px; bottom: 12px; }
   .atlas-now b { font-size: 26px; }
+  .atlas-note { display: block; padding: 12px 14px 13px; font-size: 13.5px; line-height: 1.7; }
+  .atlas-note b { display: inline-block; margin: 0 8px 4px 0; }
   .miss-btn { left: auto; right: 12px; bottom: calc(max(10px, env(safe-area-inset-bottom)) + 84px); width: 48px; padding: 0; justify-content: center; }
   .miss-btn span { display: none; }
   .mem-card { padding: 16px 16px 14px; gap: 12px; }
@@ -941,3 +946,18 @@ body:not(.is-locked) .miss-btn { opacity: 1; pointer-events: auto; }
 
 /* a remembered device skips the password field */
 .has-key .lock form, .has-key .lock .lock-sub { visibility: hidden; }
+/* ...and where the browser wants a tap before any sound, one tap on the door starts the song */
+.enter-wrap { display: none; }
+.has-key .lock.can-enter .lock-sub { visibility: visible; }
+.lock.can-enter form { display: none; }
+.lock.can-enter .enter-wrap { display: grid; justify-items: center; gap: 14px; animation: enter-in .9s var(--ease) both; }
+.enter {
+  display: inline-flex; align-items: center; gap: 10px; height: 54px; padding: 0 28px 0 22px; border: 0; border-radius: 999px; cursor: pointer;
+  background: var(--grad); color: #2a0f19; font: 500 17px var(--zh-serif); letter-spacing: .14em;
+  box-shadow: 0 16px 48px -16px rgba(255, 125, 156, .75); transition: transform .25s var(--ease), filter .25s;
+}
+.enter:hover { transform: scale(1.04); filter: brightness(1.06); }
+.enter:focus-visible { outline: 2px solid rgba(255, 228, 238, .7); outline-offset: 4px; }
+.enter svg { width: 18px; height: 18px; animation: beat 1.6s ease-in-out infinite; }
+.enter-note { margin: 0; font: 13px var(--zh-serif); letter-spacing: .1em; color: var(--ink-3); }
+@keyframes enter-in { from { opacity: 0; transform: translateY(10px); } }

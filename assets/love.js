@@ -136,6 +136,7 @@
       try {
         key = await crypto.subtle.importKey('raw', fromB64(saved.k), 'AES-GCM', false, ['decrypt']);
         data = await readManifest(key);
+        if (music.has() && music.wanted() && !(await music.canAutoplay())) await waitForEnter();
         open(true);
         return;
       } catch (e) {
@@ -145,6 +146,21 @@
     key = null;
     document.documentElement.classList.remove('has-key');
     if (finePointer) pw.focus();
+  }
+
+  // A remembered device skips the password, but sound may only start from a tap: one tap on the door, and the song comes with it.
+  function waitForEnter() {
+    const b = $('#enter');
+    if (!b) return Promise.resolve();
+    lock.classList.add('can-enter');
+    if (finePointer) b.focus({ preventScroll: true });
+    return new Promise((resolve) => {
+      b.addEventListener('click', () => {
+        music.unlock();
+        lock.classList.remove('can-enter');
+        resolve();
+      }, { once: true });
+    });
   }
 
   let busy = false;
@@ -278,6 +294,8 @@
   const clock = (sec) => `${Math.floor(sec / 60)}:${pad2(Math.floor(sec % 60))}`;
   const music = (() => {
     const PREF = 'ourstory.music';
+    // Every visit starts with the song; pausing it only lasts until the site is opened again.
+    try { localStorage.removeItem(PREF); } catch (e) { /* private mode */ }
     const VOL = 0.6;
     // A few bytes of silence, played inside a tap so the real song may start later without one.
     const SILENCE = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
@@ -291,8 +309,8 @@
     let armed = false;
     let fadeTimer = 0;
     const pref = {
-      get() { try { return localStorage.getItem(PREF); } catch (e) { return null; } },
-      set(v) { try { localStorage.setItem(PREF, v); } catch (e) { /* private mode */ } },
+      get() { try { return sessionStorage.getItem(PREF); } catch (e) { return null; } },
+      set(v) { try { sessionStorage.setItem(PREF, v); } catch (e) { /* private mode */ } },
     };
     const has = () => !!(data && data.music && data.music.id);
 
@@ -400,6 +418,17 @@
       if (pref.get() === 'off') { ui(); return; }
       play();
     }
+    // Whether sound may start without a tap here (some desktop browsers allow it for sites people come back to).
+    async function canAutoplay() {
+      try { if (navigator.getAutoplayPolicy) return navigator.getAutoplayPolicy('mediaelement') === 'allowed'; } catch (e) { /* not supported */ }
+      const probe = new Audio(SILENCE);
+      try {
+        await Promise.race([probe.play(), sleep(400).then(() => { throw new Error('timeout'); })]);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
     function duck(on) {
       if (on && playing()) { ducked = true; pause(false); }
       else if (!on && ducked) { ducked = false; play(); }
@@ -432,7 +461,7 @@
       notes.forEach((n, i) => { if (now >= n.t) cur = i; });
       document.querySelectorAll('.song-notes li').forEach((li, i) => li.classList.toggle('now', on && i === cur));
     }
-    return { unlock, play, pause, toggle, auto, duck, ui, has };
+    return { unlock, play, pause, toggle, auto, duck, ui, has, canAutoplay, wanted: () => pref.get() !== 'off' };
   })();
 
   /* ---------- render: one page per part of the story ---------- */
@@ -856,7 +885,7 @@
     const tilt = [-2.4, 1.8, -1.2, 2.6, -1.8, 1.2];
     sets.firsts = [];
     return `<section class="sec firsts-sec"><div class="wrap">
-      <header class="sec-head reveal"><p class="kicker">Firsts</p><h2>第一次</h2><p class="lead">那些第一次，一张一张贴在这里。</p></header>
+      <header class="sec-head reveal"><p class="kicker">Firsts</p><h2>第一次</h2><p class="lead">那些第一次，一张一张贴在这里。日子按照片里能找到的最早一张来算；换手机丢掉的那些，就记在心里。</p></header>
       <div class="firsts">${list.map((f, i) => {
         const m = photoFor(f);
         if (m) sets.firsts.push(m.id);
@@ -912,7 +941,7 @@
     const km = trip.stops.length > 1 ? Math.round(trip.km) : 0;
     const earth = aroundEarth(km);
     const lead = groups.length
-      ? `照片里的定位整理出 ${groups.length} 个一起去过的地方。${km ? `按时间把它们连起来，一共 ${nf.format(km)} 公里${earth ? `，${earth}` : ''}。` : ''}再往下，是全部 ${nf.format(media.length)} 个瞬间。`
+      ? `照片里还留着定位的，整理出 ${groups.length} 个一起去过的地方。${km ? `按时间把它们连起来，一共 ${nf.format(km)} 公里${earth ? `，${earth}` : ''}。` : ''}这只是不完全统计：换过几次手机，很多去过的地方没能留下位置和时间，只剩下照片。再往下，是全部 ${nf.format(media.length)} 个瞬间。`
       : `一共 ${nf.format(media.length)} 个瞬间。点开任意一张，可以左右翻看。`;
     return pageHead(p, lead, {
       facts: [
@@ -2029,7 +2058,7 @@
       </li>`;
     }).join('');
     return `<section class="sec atlas" id="map"><div class="wrap">
-      <div class="atlas-map reveal">
+      <div class="atlas-map reveal"><div class="atlas-stage">
         <canvas id="atlas" aria-label="旅行地图"></canvas>
         <div class="atlas-ctl" role="group" aria-label="地图范围">
           <button type="button" data-view="fit" aria-pressed="true">我们的足迹</button>
@@ -2037,10 +2066,12 @@
         </div>
         <div class="atlas-now" id="atlas-now" aria-live="polite"></div>
         ${journey().stops.length > 1 ? `<div class="atlas-km">
-          <small>我们走过的路</small>
+          <small>我们走过的路 · 不完全统计</small>
           <p><b id="km-n">0</b><span>公里</span></p>
           <button class="km-play" id="km-play" type="button" aria-pressed="false">${PLAY}${PAUSE}<em>沿着时间重走一遍</em></button>
         </div>` : ''}
+        </div>
+        <p class="atlas-note"><b>不完全统计</b><span>换过几次手机，很多照片的拍摄地点和时间都没能留下来，只剩下照片本身。地图上的地方和公里数，只是照片还记得的那一部分；我们一起走过的路，比这里画出来的多得多。</span></p>
       </div>
       <div class="trips-wrap reveal">
         <button class="trips-nav prev" type="button" aria-label="上一站"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg></button>
@@ -2061,17 +2092,18 @@
 
     const P = (lon, lat, v = view) => [W / 2 + (lon - v.lon) * K * v.s, H / 2 - (lat - v.lat) * v.s];
 
-    function fitView(list, pad) {
+    // top: extra room kept free at the top for the view buttons.
+    function fitView(list, pad, top = 0) {
       const lons = list.map((p) => p.lon);
       const lats = list.map((p) => p.lat);
       const lo0 = Math.min(...lons); const lo1 = Math.max(...lons);
       const la0 = Math.min(...lats); const la1 = Math.max(...lats);
-      const s = Math.min((W - pad * 2) / Math.max(1, (lo1 - lo0) * K), (H - pad * 2) / Math.max(1, la1 - la0), 40);
-      return { lon: (lo0 + lo1) / 2, lat: (la0 + la1) / 2, s };
+      const s = Math.min((W - pad * 2) / Math.max(1, (lo1 - lo0) * K), (H - pad * 2 - top) / Math.max(1, la1 - la0), 40);
+      return { lon: (lo0 + lo1) / 2, lat: (la0 + la1) / 2 + top / 2 / s, s };
     }
     const worldView = () => ({ lon: 100, lat: 18, s: Math.max(W / (360 * K), H / 150) });
     const placeView = (pl) => ({ lon: pl.lon, lat: pl.lat, s: Math.max(16, Math.min(64, Math.min(W, H * 1.3) / 8)) });
-    const targetFor = () => (mode === 'world' ? worldView() : mode === 'place' && active >= 0 ? placeView(data.places[active]) : fitView(pins, Math.min(W, H) * 0.14));
+    const targetFor = () => (mode === 'world' ? worldView() : mode === 'place' && active >= 0 ? placeView(data.places[active]) : fitView(pins, Math.min(W, H) * 0.14, 40));
 
     function setup() {
       canvas = $('#atlas');
@@ -2448,6 +2480,8 @@
         ctx.fill();
       }
       ctx.textBaseline = 'middle';
+      // A name may not sit on top of another place's dot either.
+      const dots = pins.map((p) => { const [x, y] = P(p.lon, p.lat); return [x - 5, y - 5, 10, 10, p.i]; });
       for (const p of order) {
         const [x, y] = P(p.lon, p.lat);
         const on = p.i === active;
@@ -2456,7 +2490,8 @@
         const h = on ? 20 : 16;
         let bx = x + 9;
         let box = [bx, y - h / 2, w, h];
-        const hit = (b) => boxes.some((o) => b[0] < o[0] + o[2] + 4 && b[0] + b[2] + 4 > o[0] && b[1] < o[1] + o[3] && b[1] + b[3] > o[1]);
+        const over = (b, o) => b[0] < o[0] + o[2] + 4 && b[0] + b[2] + 4 > o[0] && b[1] < o[1] + o[3] && b[1] + b[3] > o[1];
+        const hit = (b) => boxes.some((o) => over(b, o)) || dots.some((o) => o[4] !== p.i && over(b, o));
         if (hit(box) || bx + w > W - 4) { bx = x - 9 - w; box = [bx, y - h / 2, w, h]; }
         if ((hit(box) || bx < 4) && !on) continue;
         boxes.push(box);
