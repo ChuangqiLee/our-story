@@ -914,28 +914,61 @@
   }
 
   /* ---------- hero: a slow slideshow of the photos picked in story.json ---------- */
+  // A photo that suits the screen fills it alone. The others share a slide: portraits side by side
+  // on a wide screen, landscapes stacked above the names on a phone, so each one is seen whole.
+  // One left without a partner stands beside the names on a wide screen, or above them on a phone.
   const hero = (() => {
+    let picks = [];
     let slides = [];
+    let wide = true;
     let idx = 0;
     let layers = [];
     let timer = 0;
     let started = false;
     let visible = true;
     const HOLD = 6500;
+    const ar = (m) => m.w / m.h;
+    // Side by side, a group is as wide as its photos' widths added up; stacked, as tall as their heights.
+    const shapeOf = (list, stack) => (stack ? 1 / list.reduce((n, m) => n + 1 / ar(m), 0) : list.reduce((n, m) => n + ar(m), 0));
 
-    function choose() {
+    function plan() {
       const ids = data.hero && data.hero.length ? data.hero : data.cover ? [data.cover] : [];
-      slides = ids.map((id) => byId.get(id)).filter(Boolean);
-      if (!slides.length && data.media.length) slides = [data.media[0]];
+      picks = ids.map((id) => byId.get(id)).filter(Boolean);
+      if (!picks.length && data.media.length) picks = [data.media[0]];
+      wide = innerWidth >= innerHeight;
+      const stack = !wide;
+      const target = wide ? innerWidth / innerHeight : innerWidth / (innerHeight * 0.7);
+      const alone = (m) => (wide ? ar(m) >= 1.15 : ar(m) <= 0.9);
+      const used = new Set();
+      slides = [];
+      picks.forEach((m, i) => {
+        if (used.has(i)) return;
+        used.add(i);
+        const list = [m];
+        if (!alone(m)) {
+          // Pull in the next photos that would not fit alone either.
+          for (let j = i + 1; j < picks.length && list.length < 3; j += 1) {
+            const n = picks[j];
+            if (alone(n) || used.has(j)) continue;
+            if (Math.abs(shapeOf([...list, n], stack) - target) >= Math.abs(shapeOf(list, stack) - target)) break;
+            list.push(n);
+            used.add(j);
+          }
+        }
+        slides.push({ list, stack: stack && !alone(m), side: !stack && !alone(m) && list.length === 1 });
+      });
     }
-    // Filling the screen with a photo of a very different shape crops the faces off,
-    // so such a photo is shown whole, over a blurred copy of itself.
-    function look(m) {
-      const screen = innerWidth / innerHeight;
-      const photo = m.w / m.h;
-      const whole = Math.min(screen / photo, photo / screen) < 0.6;
-      const pos = whole ? (photo > 1 ? '50% 38%' : '50% 50%') : m.h > m.w ? '50% 30%' : '50% 50%';
-      return { whole, pos };
+    const urls = (s) => Promise.all(s.list.map((m) => blobURL(m.l, 'image/webp', true)));
+    function fill(el, s, us) {
+      const h = s.stack ? Math.min(innerHeight * 0.7, innerWidth / shapeOf(s.list, true)) : 0;
+      const w = s.side ? Math.min(innerWidth * 0.62, innerHeight * ar(s.list[0])) : 0;
+      // Each photo gets room in proportion to its shape, so it is barely cropped, if at all.
+      const room = s.list.map((m) => (s.stack ? 1 / ar(m) : ar(m)));
+      const sum = room.reduce((x, y) => x + y, 0);
+      const size = h ? ` style="height:${Math.round(h)}px"` : w ? ` style="width:${Math.round(w)}px"` : '';
+      el.innerHTML = `<div class="frames${s.stack ? ' stack' : s.side ? ' side' : ''}"${size}>${s.list.map((m, k) => `<div class="cell" style="flex:${((room[k] / sum) * 100).toFixed(2)} 1 0">
+        <img alt="" src="${us[k]}" style="object-position:${m.h > m.w ? '50% 30%' : '50% 50%'}"></div>`).join('')}</div>`;
+      return Promise.all([...el.querySelectorAll('img')].map((img) => img.decode().catch(() => {})));
     }
     function prepare() {
       const box = $('#hero-media');
@@ -943,14 +976,20 @@
       layers = [0, 1].map(() => {
         const el = document.createElement('div');
         el.className = 'slide';
-        el.innerHTML = '<img class="bg" alt=""><img class="fg" alt="">';
         box.appendChild(el);
         return el;
       });
-      if (!slides.length) choose();
+      if (!slides.length) plan();
       new IntersectionObserver((es) => { visible = es[0].isIntersecting; }).observe($('#top'));
+      // Turning a phone sideways needs the other kind of layout.
+      addEventListener('resize', () => {
+        if ((innerWidth >= innerHeight) === wide || !started) return;
+        plan();
+        idx = 0;
+        showSlide(0);
+      });
     }
-    const first = () => { if (!slides.length) choose(); return slides[0] || null; };
+    const first = () => { if (!slides.length) plan(); return slides[0] || null; };
     function meta(m) {
       const el = $('#hero-meta');
       if (!el) return;
@@ -962,23 +1001,17 @@
       }, 500);
     }
     function showSlide(i) {
-      const m = slides[i];
-      if (!m) return Promise.resolve();
-      return blobURL(m.l, 'image/webp', i === 0).then((u) => new Promise((resolve) => {
+      const s = slides[i];
+      if (!s) return Promise.resolve();
+      return urls(s).then((us) => {
         const el = layers[i % 2];
         const other = layers[(i + 1) % 2];
-        const [bg, fg] = el.children;
-        const { whole, pos } = look(m);
-        fg.onload = () => {
-          fg.style.objectPosition = pos;
-          el.className = `slide on kb${i % 4}${whole ? ' whole' : ''}`;
+        return fill(el, s, us).then(() => {
+          el.className = `slide on kb${i % 4}`;
           other.classList.remove('on');
-          meta(m);
-          resolve();
-        };
-        if (whole) bg.src = u;
-        fg.src = u;
-      })).catch(() => {});
+          meta(s.list[0]);
+        });
+      }).catch(() => {});
     }
     function loop() {
       clearTimeout(timer);
@@ -987,7 +1020,7 @@
           idx = (idx + 1) % slides.length;
           await showSlide(idx);
           const next = slides[(idx + 1) % slides.length];
-          if (next) blobURL(next.l, 'image/webp');
+          if (next) urls(next).catch(() => {});
         }
         loop();
       }, HOLD);
@@ -996,11 +1029,11 @@
       if (started || !layers.length) return;
       started = true;
       showSlide(0).then(() => {
-        if (slides[1]) blobURL(slides[1].l, 'image/webp');
+        if (slides[1]) urls(slides[1]).catch(() => {});
         if (!reduceMotion) loop();
       });
     }
-    return { prepare, start, first, look };
+    return { prepare, start, first, urls, fill };
   })();
 
   /* ---------- opening: the photos gather into a heart, which opens into the cover ---------- */
@@ -1035,7 +1068,7 @@
 
   function prepareIntro() {
     const cover = hero.first();
-    const coverURL = cover ? blobURL(cover.l, 'image/webp', true) : Promise.reject(new Error('no cover'));
+    const coverURL = cover ? hero.urls(cover) : Promise.reject(new Error('no cover'));
     const spriteURL = data.mosaic ? blobURL(data.mosaic.id, 'image/webp', true) : Promise.reject(new Error('no mosaic'));
     coverURL.catch(() => {});
     spriteURL.catch(() => {});
@@ -1057,7 +1090,7 @@
     const el = document.createElement('div');
     el.className = 'intro';
     el.innerHTML = `<div class="intro-heart" style="left:${left}px;top:${top}px;width:${W}px;height:${H}px"></div>
-      <div class="intro-cover"><img class="bg" alt=""><img class="fg" alt=""></div>
+      <div class="intro-cover"></div>
       <div class="intro-cap" style="top:${top + H + 26}px"></div>
       ${hasSeal() ? `<div class="intro-seal" style="left:${(vw - W * 0.46) / 2}px;top:${top + H * 0.44 - W * 0.23}px;width:${W * 0.46}px;height:${W * 0.46}px">${sealSVG('is-intro')}</div>` : ''}
       <button class="intro-skip" type="button">跳过</button>`;
@@ -1121,16 +1154,9 @@
       }
     }
 
-    const url = skipped ? null : await Promise.race([coverURL, sleep(1800).then(() => null)]).catch(() => null);
-    if (url && !skipped) {
-      const img = coverEl.querySelector('.fg');
-      img.src = url;
-      try { await img.decode(); } catch (e) { /* draw anyway */ }
-      if (cover) {
-        const { whole, pos } = hero.look(cover);
-        img.style.objectPosition = pos;
-        if (whole) { coverEl.classList.add('whole'); coverEl.querySelector('.bg').src = url; }
-      }
+    const urls = skipped ? null : await Promise.race([coverURL, sleep(1800).then(() => null)]).catch(() => null);
+    if (urls && !skipped) {
+      await hero.fill(coverEl, cover, urls);
       const mask = heartMask(rows);
       const setMask = (w, h, x, y) => {
         coverEl.style.webkitMaskImage = mask; coverEl.style.maskImage = mask;

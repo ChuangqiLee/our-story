@@ -140,7 +140,6 @@ body:not(.is-locked) .lock { opacity: 0; visibility: hidden; filter: blur(12px);
     -webkit-mask-size 1.5s cubic-bezier(.65, 0, .2, 1), -webkit-mask-position 1.5s cubic-bezier(.65, 0, .2, 1),
     mask-size 1.5s cubic-bezier(.65, 0, .2, 1), mask-position 1.5s cubic-bezier(.65, 0, .2, 1);
 }
-.intro-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .intro-cap { position: absolute; left: var(--gutter); right: var(--gutter); text-align: center; opacity: 0; transform: translateY(10px); transition: opacity .8s var(--ease), transform .8s var(--ease); }
 .intro-cap.on { opacity: 1; transform: none; }
 .intro-cap .k { display: block; margin-bottom: 10px; font: 500 11px var(--mono); letter-spacing: .26em; color: var(--ink-3); }
@@ -161,11 +160,12 @@ main[hidden] { display: none; }
 .hero-media { position: absolute; inset: 0; z-index: -1; }
 .hero-media .slide { position: absolute; inset: 0; opacity: 0; transition: opacity 1.8s var(--ease); will-change: opacity, transform; }
 .hero-media .slide.on { opacity: .6; }
-.hero-media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-/* a photo far from the screen's shape is shown whole, over a blurred copy of itself */
-.hero-media .bg, .intro-cover .bg { display: none; }
-.hero-media .whole .bg, .intro-cover.whole .bg { display: block; filter: blur(34px) saturate(1.2) brightness(.75); transform: scale(1.2); }
-.hero-media .whole .fg, .intro-cover.whole .fg { object-fit: contain; }
+/* one photo fills a slide; two or three share it, side by side or (on a phone) stacked above the names */
+.frames { position: absolute; inset: 0; display: flex; gap: 3px; }
+.frames.stack { bottom: auto; flex-direction: column; -webkit-mask-image: linear-gradient(#000 80%, transparent); mask-image: linear-gradient(#000 80%, transparent); }
+.frames.side { left: auto; -webkit-mask-image: linear-gradient(90deg, transparent, #000 28%); mask-image: linear-gradient(90deg, transparent, #000 28%); }
+.cell { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.cell img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 /* slow Ken Burns drift, a different direction for each slide */
 .hero-media .slide.kb0 { animation: kb0 10s linear both; }
 .hero-media .slide.kb1 { animation: kb1 10s linear both; }
