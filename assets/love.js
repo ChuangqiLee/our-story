@@ -273,6 +273,8 @@
 
     function ensure() {
       if (audio) return;
+      // iPhones mute Web Audio when the silent switch is on; music should play like a video does.
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* older Safari */ }
       audio = new Audio();
       audio.loop = true;
       audio.preload = 'auto';
