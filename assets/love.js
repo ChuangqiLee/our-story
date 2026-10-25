@@ -158,20 +158,28 @@
     open(false);
   });
 
-  function open(remembered) {
+  async function open(remembered) {
     loadStoryFont();
     data.media.forEach((m, i) => { m.i = i; byId.set(m.id, m); });
     render();
     lock.classList.remove('is-checking');
     lock.classList.add('is-open');
-    const wait = reduceMotion ? 0 : remembered ? 900 : 1500;
-    setTimeout(() => {
-      story.hidden = false;
-      document.body.classList.remove('is-locked');
-      document.documentElement.classList.remove('has-key');
-      startReveal();
-      setTimeout(() => lock.remove(), 1100);
-    }, wait);
+    const intro = reduceMotion ? null : prepareIntro();
+    await sleep(reduceMotion ? 0 : remembered ? 800 : 1300);
+    if (intro) {
+      try { await intro.play(); return; } catch (e) { /* fall back to a plain reveal */ }
+    }
+    showStory();
+  }
+
+  function showStory() {
+    if (!story.hidden) return;
+    story.hidden = false;
+    document.body.classList.remove('is-locked');
+    document.documentElement.classList.remove('has-key');
+    startReveal();
+    hero.start();
+    setTimeout(() => lock.remove(), 1100);
   }
 
   /* ---------- helpers ---------- */
@@ -181,12 +189,16 @@
     ? `${s.getFullYear()}.${pad2(s.getMonth() + 1)}.${pad2(s.getDate())}`
     : s.slice(0, 10).replace(/-/g, '.'));
   const nf = new Intl.NumberFormat('en-US');
+  const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
+  const placeOf = (m) => (m && m.p != null && data.places ? data.places[m.p] : null);
+  // A date worked out from file times is only trusted to the month.
+  const dateLabel = (m) => (m.dq === 'unknown' ? '' : m.dq === 'approx' ? `约 ${m.date.slice(0, 7).replace('-', '.')}` : fmtDate(m.date));
 
   function photoButton(m, opts = {}) {
     const ar = (m.w / m.h).toFixed(4);
     const extra = opts.more ? `<span class="more">+${opts.more}</span>` : (m.type === 'video' ? `<span class="play">${PLAY}</span>` : '');
     const kind = m.type === 'video' ? '视频' : '照片';
-    const label = m.cap ? esc(m.cap) : m.dq === 'unknown' ? kind : `${fmtDate(m.date)} 的${kind}`;
+    const label = m.cap ? esc(m.cap) : m.dq === 'unknown' ? kind : `${dateLabel(m)} 的${kind}`;
     return `<button class="ph" type="button" data-id="${m.id}" data-set="${opts.set || ''}" style="--c:${m.c};--ar:${ar}" aria-label="${label}"><img alt="" decoding="async">${extra}</button>`;
   }
 
@@ -204,12 +216,13 @@
 
     /* hero */
     html += `<section class="hero" id="top">
-      <div class="hero-media"><img alt="" id="hero-img"></div>
+      <div class="hero-media" id="hero-media" aria-hidden="true"></div>
+      <div class="hero-meta" id="hero-meta" aria-hidden="true"></div>
       <div class="hero-inner">
-        ${since ? `<p class="kicker">Together since ${fmtDate(data.since)}</p>` : ''}
-        <h1 class="names">${a || b ? `<span>${esc(a)}</span><span class="amp">&amp;</span><span>${esc(b)}</span>` : '<span>Us</span>'}</h1>
-        ${data.tagline ? `<p class="tagline">${esc(data.tagline)}</p>` : ''}
-        ${since ? `<div class="counter" aria-live="off">
+        ${since ? `<p class="kicker reveal">Together since ${fmtDate(data.since)}</p>` : ''}
+        <h1 class="names reveal" style="transition-delay:.12s">${a || b ? `<span>${esc(a)}</span><span class="amp">&amp;</span><span>${esc(b)}</span>` : '<span>Us</span>'}</h1>
+        ${data.tagline ? `<p class="tagline reveal">${esc(data.tagline)}</p>` : ''}
+        ${since ? `<div class="counter reveal" style="transition-delay:.24s" aria-live="off">
           <span class="lbl">我们已经在一起</span>
           <div class="big"><b id="c-days">0</b><span>天</span></div>
           <div class="hms"><span><b id="c-h">00</b>时</span><span><b id="c-m">00</b>分</span><span><b id="c-s">00</b>秒</span></div>
@@ -221,16 +234,19 @@
     /* stats */
     const together = since ? Math.floor((Date.now() - since) / DAY) : null;
     const next = since ? nextAnniversary(since) : null;
-    const places = new Set(months.map((g) => g.key)).size;
+    const places = data.places || [];
     html += `<section class="sec" id="stats"><div class="wrap"><div class="stats reveal">
       ${since ? `<div class="stat"><b>${nf.format(together)}</b><span>天在一起</span><small>DAYS</small></div>` : ''}
       <div class="stat"><b>${nf.format(media.length)}</b><span>张照片和视频</span><small>MOMENTS</small></div>
-      <div class="stat"><b>${places}</b><span>个留下回忆的月份</span><small>MONTHS</small></div>
+      ${places.length ? `<div class="stat"><b>${places.length}</b><span>个一起去过的地方</span><small>PLACES</small></div>` : `<div class="stat"><b>${months.length}</b><span>个留下回忆的月份</span><small>MONTHS</small></div>`}
       ${next ? `<div class="stat"><b>${next.days}</b><span>${next.days === 0 ? `今天就是 ${next.n} 周年` : `天后是 ${next.n} 周年`}</span><small>ANNIVERSARY</small></div>` : ''}
     </div></div></section>`;
 
+    /* travel map */
+    html += atlasHTML();
+
     /* timeline */
-    const items = timelineItems(months, data.milestones || [], data.chapters || {});
+    const items = timelineItems(months, withAnniversaries(data.milestones || [], since, media), data.chapters || {});
     if (items.length) {
       let lastYear = null;
       let flip = false;
@@ -298,10 +314,8 @@
     story.innerHTML = html;
 
     if (since) tick(since);
-    if (data.cover && byId.has(data.cover)) {
-      const c = byId.get(data.cover);
-      blobURL(c.l, 'image/webp', true).then((u) => { const img = $('#hero-img'); img.onload = () => img.classList.add('ready'); img.src = u; }).catch(() => {});
-    }
+    hero.prepare();
+    atlas.setup();
     if (media.length) setupWall();
     $('#relock').addEventListener('click', () => { store.clear(); location.reload(); });
   }
@@ -342,10 +356,12 @@
     const more = it.list.length - shown.length;
     const title = it.ch.title || ZH_MONTH[mo - 1];
     const count = it.list.length;
+    const where = [...new Set(it.list.map((m) => m.p).filter((p) => p != null))].map((p) => data.places[p].name);
     return `<article class="tl-item chapter reveal${flip ? ' flip' : ''}">
       <div class="tl-text">
         <div class="tl-date">${y} · ${String(mo).padStart(2, '0')}</div>
         <h3 class="tl-title">${esc(title)}</h3>
+        ${where.length ? `<div class="tl-places">${where.map((n) => `<span>${esc(n)}</span>`).join('')}</div>` : ''}
         ${it.ch.text ? `<p class="tl-body">${esc(it.ch.text)}</p>` : ''}
         <div class="tl-count">${count} 个瞬间</div>
       </div>
@@ -523,7 +539,7 @@
     lbIndex = (i + lbSet.length) % lbSet.length;
     const m = byId.get(lbSet[lbIndex]);
     $('#lb-n').textContent = `${lbIndex + 1} / ${lbSet.length}`;
-    $('#lb-date').textContent = m.dq === 'unknown' ? '' : fmtDate(m.date);
+    $('#lb-date').textContent = [dateLabel(m), placeOf(m) && placeOf(m).name].filter(Boolean).join(' · ');
     $('#lb-text').textContent = m.cap || '';
     stage.innerHTML = '<img alt="" class="ghost">';
     const ghost = stage.querySelector('img');
@@ -582,6 +598,635 @@
     stage.appendChild(h);
     setTimeout(() => h.remove(), 1000);
   }
+
+  /* ---------- anniversaries on the timeline ---------- */
+  function withAnniversaries(milestones, since, media) {
+    if (!since) return milestones;
+    const out = milestones.slice();
+    const have = new Set(out.map((ms) => ms.date));
+    const today = new Date();
+    for (let n = 1; ; n += 1) {
+      const d = new Date(since.getFullYear() + n, since.getMonth(), since.getDate());
+      if (d > today) break;
+      const key = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      if (have.has(key)) continue;
+      const that = media.filter((m) => m.dq === 'exif' && m.date.startsWith(key));
+      const photo = (that.find((m) => m.fav) || that[0] || {}).id || null;
+      out.push({ date: key, title: `在一起 ${n} 周年`, text: '', photo });
+    }
+    return out;
+  }
+
+  /* ---------- hero: a slow slideshow of the best photos ---------- */
+  const hero = (() => {
+    let slides = [];
+    let idx = 0;
+    let layers = [];
+    let timer = 0;
+    let started = false;
+    let visible = true;
+    const HOLD = 6500;
+
+    function choose() {
+      const ids = data.hero && data.hero.length ? data.hero : data.cover ? [data.cover] : [];
+      const list = ids.map((id) => byId.get(id)).filter(Boolean);
+      const wide = innerWidth >= innerHeight;
+      // Landscape photos for a wide screen; portrait and square ones for a phone.
+      const fit = list.filter((m) => (wide ? m.w / m.h > 1.1 : m.w / m.h <= 1.1));
+      slides = fit.length >= 3 ? fit : list;
+      if (!slides.length && data.media.length) slides = [data.media[0]];
+    }
+    function prepare() {
+      const box = $('#hero-media');
+      if (!box) return;
+      layers = [0, 1].map(() => { const img = document.createElement('img'); img.alt = ''; box.appendChild(img); return img; });
+      if (!slides.length) choose();
+      new IntersectionObserver((es) => { visible = es[0].isIntersecting; }).observe($('#top'));
+    }
+    const first = () => { if (!slides.length) choose(); return slides[0] || null; };
+    function meta(m) {
+      const el = $('#hero-meta');
+      if (!el) return;
+      const p = placeOf(m);
+      el.classList.remove('on');
+      setTimeout(() => {
+        el.textContent = [p && (p.en || p.name), dateLabel(m)].filter(Boolean).join(' · ');
+        el.classList.toggle('on', !!el.textContent);
+      }, 500);
+    }
+    function showSlide(i) {
+      const m = slides[i];
+      if (!m) return Promise.resolve();
+      return blobURL(m.l, 'image/webp', i === 0).then((u) => new Promise((resolve) => {
+        const img = layers[i % 2];
+        const other = layers[(i + 1) % 2];
+        img.onload = () => {
+          img.style.objectPosition = m.h > m.w ? '50% 30%' : '50% 50%';
+          img.className = `on kb${i % 4}`;
+          other.classList.remove('on');
+          meta(m);
+          resolve();
+        };
+        img.src = u;
+      })).catch(() => {});
+    }
+    function loop() {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        if (visible && !document.hidden && slides.length > 1) {
+          idx = (idx + 1) % slides.length;
+          await showSlide(idx);
+          const next = slides[(idx + 1) % slides.length];
+          if (next) blobURL(next.l, 'image/webp');
+        }
+        loop();
+      }, HOLD);
+    }
+    function start() {
+      if (started || !layers.length) return;
+      started = true;
+      showSlide(0).then(() => {
+        if (slides[1]) blobURL(slides[1].l, 'image/webp');
+        if (!reduceMotion) loop();
+      });
+    }
+    return { prepare, start, first };
+  })();
+
+  /* ---------- opening: the photos gather into a heart, which opens into the cover ---------- */
+  const HEART_COLS = 11;
+  const HEART_TOP = 12.5;
+  const HEART_UNIT = 34 / HEART_COLS;
+  const heartPoint = (t) => [16 * Math.sin(t) ** 3, 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)];
+  const HEART_POLY = Array.from({ length: 160 }, (_, i) => heartPoint((i / 160) * Math.PI * 2));
+  function inHeart(x, y) {
+    let c = false;
+    for (let i = 0, j = HEART_POLY.length - 1; i < HEART_POLY.length; j = i, i += 1) {
+      const [x1, y1] = HEART_POLY[i];
+      const [x2, y2] = HEART_POLY[j];
+      if ((y1 > y) !== (y2 > y) && x < ((x2 - x1) * (y - y1)) / (y2 - y1) + x1) c = !c;
+    }
+    return c;
+  }
+  function heartCells() {
+    const cells = [];
+    for (let r = 0; ; r += 1) {
+      const y = HEART_TOP - (r + 0.5) * HEART_UNIT;
+      if (y < -17.5) break;
+      for (let c = 0; c < HEART_COLS; c += 1) if (inHeart(-17 + (c + 0.5) * HEART_UNIT, y)) cells.push([c, r]);
+    }
+    return cells;
+  }
+  function heartMask(rows) {
+    const h = rows * HEART_UNIT;
+    const d = HEART_POLY.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(2)} ${(-y).toFixed(2)}`).join('') + 'Z';
+    return `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='-17 ${-HEART_TOP} 34 ${h.toFixed(3)}' preserveAspectRatio='none'><path d='${d}'/></svg>`)}")`;
+  }
+
+  function prepareIntro() {
+    const cover = hero.first();
+    const coverURL = cover ? blobURL(cover.l, 'image/webp', true) : Promise.reject(new Error('no cover'));
+    const spriteURL = data.mosaic ? blobURL(data.mosaic.id, 'image/webp', true) : Promise.reject(new Error('no mosaic'));
+    coverURL.catch(() => {});
+    spriteURL.catch(() => {});
+    return { play: () => playIntro(spriteURL, coverURL, cover) };
+  }
+
+  async function playIntro(spriteURL, coverURL, cover) {
+    const sprite = await Promise.race([spriteURL, sleep(2600).then(() => null)]).catch(() => null);
+    const vw = innerWidth;
+    const vh = innerHeight;
+    const cells = heartCells();
+    const rows = cells.reduce((n, [, r]) => Math.max(n, r + 1), 0);
+    const W = Math.min(vw * 0.8, vh * 0.56, 460);
+    const step = W / HEART_COLS;
+    const H = rows * step;
+    const left = (vw - W) / 2;
+    const top = Math.max(16, vh * 0.45 - H / 2);
+
+    const el = document.createElement('div');
+    el.className = 'intro';
+    el.innerHTML = `<div class="intro-heart" style="left:${left}px;top:${top}px;width:${W}px;height:${H}px"></div>
+      <div class="intro-cover"><img alt=""></div>
+      <div class="intro-cap" style="top:${top + H + 26}px"></div>
+      <button class="intro-skip" type="button">跳过</button>`;
+    document.body.appendChild(el);
+    const heartEl = el.querySelector('.intro-heart');
+    const coverEl = el.querySelector('.intro-cover');
+    const cap = el.querySelector('.intro-cap');
+    lock.classList.add('is-leaving');
+
+    let skipped = false;
+    const skip = new Promise((resolve) => {
+      el.addEventListener('click', () => { skipped = true; resolve(); }, { once: true });
+    });
+    const wait = (ms) => Promise.race([sleep(ms), skip]);
+
+    const since = data.since ? parseDay(data.since) : null;
+    const days = since ? Math.floor((Date.now() - since) / DAY) + 1 : 0;
+    cap.innerHTML = `${since ? `<span class="k">${fmtDate(data.since)} — ${fmtDate(new Date())}</span>` : ''}
+      <b>${since ? `第 ${nf.format(days)} 天 · ` : ''}${nf.format(data.media.length)} 个瞬间</b>`;
+
+    let tiles = [];
+    if (sprite && data.mosaic) {
+      const mos = data.mosaic;
+      const srows = Math.ceil(mos.n / mos.cols);
+      const order = cells.map((_, i) => i % mos.n).sort(() => Math.random() - 0.5);
+      const g = step * 0.06;
+      tiles = cells.map(([c, r], i) => {
+        const t = document.createElement('i');
+        const k = order[i];
+        t.className = 'intro-tile';
+        t.style.cssText = `left:${c * step + g}px;top:${r * step + g}px;width:${step - 2 * g}px;height:${step - 2 * g}px;`
+          + `background-image:url(${sprite});background-size:${mos.cols * 100}% ${srows * 100}%;`
+          + `background-position:${((k % mos.cols) / (mos.cols - 1)) * 100}% ${(Math.floor(k / mos.cols) / Math.max(1, srows - 1)) * 100}%`;
+        heartEl.appendChild(t);
+        return t;
+      });
+      tiles.forEach((t) => {
+        const a = Math.random() * Math.PI * 2;
+        const d = Math.max(vw, vh) * (0.5 + Math.random() * 0.5);
+        t.animate([
+          { transform: `translate(${Math.cos(a) * d}px, ${Math.sin(a) * d}px) scale(.3) rotate(${(Math.random() - 0.5) * 120}deg)`, opacity: 0 },
+          { opacity: 1, offset: 0.3 },
+          { transform: 'none', opacity: 1 },
+        ], { duration: 1300, delay: 100 + Math.random() * 700, easing: 'cubic-bezier(.16,.84,.24,1)', fill: 'both' });
+      });
+      await wait(2000);
+      if (!skipped) {
+        cap.classList.add('on');
+        heartEl.animate([
+          { transform: 'scale(1)' }, { transform: 'scale(1.07)', offset: 0.16 }, { transform: 'scale(1)', offset: 0.34 },
+          { transform: 'scale(1.045)', offset: 0.52 }, { transform: 'scale(1)' },
+        ], { duration: 1000, easing: 'ease-in-out' });
+        await wait(1200);
+      }
+    }
+
+    const url = skipped ? null : await Promise.race([coverURL, sleep(1800).then(() => null)]).catch(() => null);
+    if (url && !skipped) {
+      const img = coverEl.querySelector('img');
+      img.src = url;
+      try { await img.decode(); } catch (e) { /* draw anyway */ }
+      if (cover && cover.h > cover.w) img.style.objectPosition = '50% 30%';
+      const mask = heartMask(rows);
+      const setMask = (w, h, x, y) => {
+        coverEl.style.webkitMaskImage = mask; coverEl.style.maskImage = mask;
+        coverEl.style.webkitMaskSize = `${w}px ${h}px`; coverEl.style.maskSize = `${w}px ${h}px`;
+        coverEl.style.webkitMaskPosition = `${x}px ${y}px`; coverEl.style.maskPosition = `${x}px ${y}px`;
+      };
+      setMask(W, H, left, top);
+      coverEl.classList.add('on');
+      cap.classList.remove('on');
+      await wait(450);
+      if (!skipped) {
+        // Grow around a point inside the heart until it covers the screen.
+        const ax = vw / 2;
+        const ay = top + H * 0.42;
+        const k = Math.max(vw / (W * 0.42), vh / (H * 0.36)) * 1.25;
+        coverEl.classList.add('grow');
+        void coverEl.offsetWidth;
+        setMask(W * k, H * k, ax - (ax - left) * k, ay - (ay - top) * k);
+        tiles.forEach((t) => {
+          const r = t.getBoundingClientRect();
+          const dx = r.left + r.width / 2 - ax;
+          const dy = r.top + r.height / 2 - ay;
+          const f = 1.6 + Math.random();
+          t.animate([{ transform: 'none', opacity: 1 }, { transform: `translate(${dx * f}px, ${dy * f}px) scale(.6) rotate(${(Math.random() - 0.5) * 90}deg)`, opacity: 0 }],
+            { duration: 1100, delay: Math.random() * 150, easing: 'cubic-bezier(.5,0,.75,0)', fill: 'forwards' });
+        });
+        await wait(1500);
+      }
+      coverEl.style.webkitMaskImage = 'none';
+      coverEl.style.maskImage = 'none';
+    }
+
+    showStory();
+    await sleep(80);
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 1000);
+  }
+
+  /* ---------- travel map ---------- */
+  function placeGroups() {
+    const groups = (data.places || []).map((pl, i) => ({ i, pl, list: [] }));
+    data.media.forEach((m) => { if (m.p != null && groups[m.p]) groups[m.p].list.push(m); });
+    groups.forEach((g) => {
+      const dated = g.list.filter((m) => m.dq !== 'unknown');
+      g.first = dated.length ? dated[0].date : '9999';
+      g.last = dated.length ? dated[dated.length - 1].date : '';
+      // Visits more than a week apart count separately.
+      g.visits = 0;
+      let prev = null;
+      dated.forEach((m) => { const t = parseDay(m.date); if (!prev || t - prev > 7 * DAY) g.visits += 1; prev = t; });
+    });
+    return groups.filter((g) => g.list.length).sort((x, y) => (x.first < y.first ? -1 : 1));
+  }
+
+  function atlasHTML() {
+    const groups = placeGroups();
+    if (!groups.length) return '';
+    const range = (g) => {
+      if (!g.last) return '';
+      const a = g.first.slice(0, 10);
+      const b = g.last.slice(0, 10);
+      if (g.visits > 1) return `${g.visits} 次 · ${a.slice(0, 7).replace('-', '.')} – ${b.slice(0, 7).replace('-', '.')}`;
+      if (a === b) return fmtDate(a);
+      return `${fmtDate(a)} – ${a.slice(0, 4) === b.slice(0, 4) ? b.slice(5).replace('-', '.') : fmtDate(b)}`;
+    };
+    const cards = groups.map((g, n) => {
+      sets[`p${g.i}`] = g.list.map((m) => m.id);
+      const c = g.list.find((m) => m.fav && m.type === 'photo') || g.list.find((m) => m.type === 'photo') || g.list[0];
+      return `<li class="trip" data-p="${g.i}">
+        <button class="ph trip-ph" type="button" data-id="${c.id}" data-set="p${g.i}" style="--c:${c.c}" aria-label="${esc(g.pl.name)}的照片"><img alt="" decoding="async"></button>
+        <div class="trip-meta">
+          <span class="trip-no">${pad2(n + 1)}</span>
+          <h3>${esc(g.pl.name)}</h3>
+          ${g.pl.en ? `<small>${esc(g.pl.en)}</small>` : ''}
+          <p>${range(g)}${range(g) ? ' · ' : ''}${g.list.length} 张</p>
+        </div>
+      </li>`;
+    }).join('');
+    return `<section class="sec atlas" id="map"><div class="wrap">
+      <header class="sec-head reveal"><p class="kicker">Our map</p><h2>我们一起去过的地方</h2>
+        <p class="lead">照片里的定位整理出 ${groups.length} 个地方。左右滑动下面的画册，地图会跟着飞过去；点开照片可以看这一站的全部。</p></header>
+      <div class="atlas-map reveal">
+        <canvas id="atlas" aria-label="旅行地图"></canvas>
+        <div class="atlas-ctl" role="group" aria-label="地图范围">
+          <button type="button" data-view="fit" aria-pressed="true">我们的足迹</button>
+          <button type="button" data-view="world" aria-pressed="false">全世界</button>
+        </div>
+        <div class="atlas-now" id="atlas-now" aria-live="polite"></div>
+      </div>
+      <div class="trips-wrap reveal">
+        <button class="trips-nav prev" type="button" aria-label="上一站"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <ol class="trips" id="trips">${cards}</ol>
+        <button class="trips-nav next" type="button" aria-label="下一站"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
+      </div>
+    </div></section>`;
+  }
+
+  const atlas = (() => {
+    const K = Math.cos((25 * Math.PI) / 180); // horizontal scale of the map projection
+    let canvas; let ctx; let W = 0; let H = 0; let dpr = 1;
+    let land = null; let bits = null;
+    let groups = []; let pins = []; let route = [];
+    let view = null; let flight = null; let mode = 'fit'; let active = -1;
+    let routeP = 0; let routeStart = 0; let visible = false; let raf = 0; let following = false;
+
+    const P = (lon, lat, v = view) => [W / 2 + (lon - v.lon) * K * v.s, H / 2 - (lat - v.lat) * v.s];
+
+    function fitView(list, pad) {
+      const lons = list.map((p) => p.lon);
+      const lats = list.map((p) => p.lat);
+      const lo0 = Math.min(...lons); const lo1 = Math.max(...lons);
+      const la0 = Math.min(...lats); const la1 = Math.max(...lats);
+      const s = Math.min((W - pad * 2) / Math.max(1, (lo1 - lo0) * K), (H - pad * 2) / Math.max(1, la1 - la0), 40);
+      return { lon: (lo0 + lo1) / 2, lat: (la0 + la1) / 2, s };
+    }
+    const worldView = () => ({ lon: 100, lat: 18, s: Math.max(W / (360 * K), H / 150) });
+    const placeView = (pl) => ({ lon: pl.lon, lat: pl.lat, s: Math.max(16, Math.min(64, Math.min(W, H * 1.3) / 8)) });
+    const targetFor = () => (mode === 'world' ? worldView() : mode === 'place' && active >= 0 ? placeView(data.places[active]) : fitView(pins, Math.min(W, H) * 0.14));
+
+    function setup() {
+      canvas = $('#atlas');
+      if (!canvas) return;
+      ctx = canvas.getContext('2d');
+      groups = placeGroups();
+      pins = groups.map((g) => ({ ...g.pl, i: g.i, n: g.list.length }));
+      // Route: each hop between two places, in the order we first made it. A hop made again
+      // (going home and back) is drawn once, always bending the same way.
+      const seq = [];
+      data.media.filter((m) => m.p != null && m.dq !== 'unknown').forEach((m) => { if (seq[seq.length - 1] !== m.p) seq.push(m.p); });
+      const seen = new Set();
+      route = [];
+      for (let i = 1; i < seq.length; i += 1) {
+        const [a, b] = [data.places[seq[i - 1]], data.places[seq[i]]].sort((x, y) => x.lon - y.lon);
+        const k = `${a.name}|${b.name}`;
+        if (!seen.has(k)) { seen.add(k); route.push([a, b]); }
+      }
+      // The page is still hidden while this runs, so size the canvas once it is laid out.
+      new ResizeObserver(() => { resize(); if (W && !flight) view = targetFor(); kick(); }).observe(canvas);
+      new IntersectionObserver((es) => {
+        visible = es[0].isIntersecting;
+        if (visible) {
+          if (!land) loadLand();
+          if (!routeStart) routeStart = performance.now() + 400;
+          kick();
+        }
+      }, { rootMargin: '100px 0px' }).observe(canvas);
+      canvas.addEventListener('click', onClick);
+      document.querySelectorAll('.atlas-ctl button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.view)));
+      setupTrips();
+    }
+
+    function loadLand() {
+      land = { loading: true };
+      fetch('assets/land.json').then((r) => r.json()).then((j) => {
+        land = j;
+        bits = Uint8Array.from(atob(j.bits), (c) => c.charCodeAt(0));
+        kick();
+      }).catch(() => { land = null; });
+    }
+
+    function resize() {
+      dpr = Math.min(2, devicePixelRatio || 1);
+      const r = canvas.getBoundingClientRect();
+      W = r.width;
+      H = r.height;
+      canvas.width = Math.round(W * dpr);
+      canvas.height = Math.round(H * dpr);
+    }
+
+    function setMode(m, placeIndex) {
+      mode = m;
+      if (m === 'place') active = placeIndex; else if (m !== 'place') active = -1;
+      document.querySelectorAll('.atlas-ctl button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === m)));
+      document.querySelectorAll('.trip').forEach((t) => t.classList.toggle('on', Number(t.dataset.p) === active));
+      const now = $('#atlas-now');
+      if (now) {
+        const g = groups.find((x) => x.i === active);
+        now.innerHTML = g ? `<b>${esc(g.pl.name)}</b><span>${g.list.length} 张照片</span>` : '';
+        now.classList.toggle('on', !!g);
+      }
+      flyTo(targetFor());
+    }
+
+    function flyTo(to) {
+      if (!view || !W) { view = to; return; }
+      const from = { ...view };
+      const dist = Math.hypot((to.lon - from.lon) * K, to.lat - from.lat);
+      flight = { from, to, t0: performance.now(), dur: reduceMotion ? 1 : 900 + Math.min(900, dist * 18), dip: Math.min(1.1, dist / 30) };
+      kick();
+    }
+
+    const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+    function step(now) {
+      if (flight) {
+        const t = Math.min(1, (now - flight.t0) / flight.dur);
+        const e = ease(t);
+        const { from, to } = flight;
+        const ls = Math.log(from.s) + (Math.log(to.s) - Math.log(from.s)) * e - flight.dip * Math.sin(Math.PI * e);
+        view = { lon: from.lon + (to.lon - from.lon) * e, lat: from.lat + (to.lat - from.lat) * e, s: Math.exp(ls) };
+        if (t >= 1) { view = to; flight = null; }
+      }
+      if (routeStart && now > routeStart) routeP = reduceMotion ? 1 : Math.min(1, (now - routeStart) / 3200);
+    }
+
+    function kick() {
+      if (raf || !visible) return;
+      raf = requestAnimationFrame(frame);
+    }
+    function frame(now) {
+      raf = 0;
+      step(now);
+      draw(now);
+      if (visible && !document.hidden) raf = requestAnimationFrame(frame);
+    }
+
+    function drawLand() {
+      if (!bits) return;
+      const st = land.step;
+      const cell = st * view.s; // px between dots vertically
+      const stride = Math.max(1, Math.ceil(4.6 / cell));
+      const gap = cell * stride;
+      const r = Math.max(0.55, Math.min(1.7, gap * 0.2));
+      const lonL = view.lon - W / 2 / (K * view.s);
+      const lonR = view.lon + W / 2 / (K * view.s);
+      const latT = view.lat + H / 2 / view.s;
+      const latB = view.lat - H / 2 / view.s;
+      const r0 = Math.max(0, Math.floor((land.lat0 - latT) / st / stride) * stride);
+      const r1 = Math.min(land.rows - 1, Math.ceil((land.lat0 - latB) / st));
+      const c0 = Math.floor((lonL - land.lon0) / st / stride) * stride;
+      const c1 = Math.ceil((lonR - land.lon0) / st);
+      ctx.beginPath();
+      for (let row = r0; row <= r1; row += stride) {
+        const lat = land.lat0 - (row + 0.5) * st;
+        const y = H / 2 - (lat - view.lat) * view.s;
+        const base = row * land.cols;
+        for (let c = c0; c <= c1; c += stride) {
+          const col = ((c % land.cols) + land.cols) % land.cols;
+          const i = base + col;
+          if (!(bits[i >> 3] & (1 << (i & 7)))) continue;
+          const x = W / 2 + (land.lon0 + (c + 0.5) * st - view.lon) * K * view.s;
+          ctx.moveTo(x + r, y);
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+        }
+      }
+      ctx.fillStyle = 'rgba(255, 232, 240, .2)';
+      ctx.fill();
+      // Warm the land around the places we have been.
+      ctx.globalCompositeOperation = 'source-atop';
+      for (const p of pins) {
+        const [x, y] = P(p.lon, p.lat);
+        const R = Math.max(26, view.s * 2.2);
+        const g = ctx.createRadialGradient(x, y, 0, x, y, R);
+        g.addColorStop(0, 'rgba(255, 125, 156, .95)');
+        g.addColorStop(1, 'rgba(255, 125, 156, 0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(x - R, y - R, R * 2, R * 2);
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    function seg(a, b) {
+      const [x0, y0] = P(a.lon, a.lat);
+      const [x2, y2] = P(b.lon, b.lat);
+      const mx = (x0 + x2) / 2; const my = (y0 + y2) / 2;
+      const dx = x2 - x0; const dy = y2 - y0;
+      return [x0, y0, mx - dy * 0.22, my + dx * 0.22, x2, y2];
+    }
+    function drawRoute(now) {
+      if (!route.length) return;
+      const n = route.length;
+      const k = routeP * n;
+      ctx.save();
+      ctx.lineWidth = 1.3;
+      ctx.strokeStyle = 'rgba(255, 160, 180, .75)';
+      ctx.shadowColor = 'rgba(255, 125, 156, .8)';
+      ctx.shadowBlur = 6;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      for (let i = 0; i < n && i < k; i += 1) {
+        let [x0, y0, cx, cy, x2, y2] = seg(route[i][0], route[i][1]);
+        const f = Math.min(1, k - i);
+        if (f < 1) { // cut the curve where the drawing has got to
+          const ax = x0 + (cx - x0) * f; const ay = y0 + (cy - y0) * f;
+          const bx = cx + (x2 - cx) * f; const by = cy + (y2 - cy) * f;
+          x2 = ax + (bx - ax) * f; y2 = ay + (by - ay) * f; cx = ax; cy = ay;
+        }
+        ctx.moveTo(x0, y0);
+        ctx.quadraticCurveTo(cx, cy, x2, y2);
+      }
+      ctx.stroke();
+      ctx.restore();
+      if (routeP >= 1 && !reduceMotion) { // a small light keeps travelling the route
+        const T = (now / 1000 / 2.2) % n;
+        const i = Math.floor(T);
+        const t = T - i;
+        const [x0, y0, cx, cy, x2, y2] = seg(route[i][0], route[i][1]);
+        const x = (1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x2;
+        const y = (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y2;
+        const g = ctx.createRadialGradient(x, y, 0, x, y, 9);
+        g.addColorStop(0, 'rgba(255, 240, 245, .95)');
+        g.addColorStop(1, 'rgba(255, 125, 156, 0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(x - 9, y - 9, 18, 18);
+      }
+    }
+
+    function drawPins(now) {
+      const boxes = [];
+      const order = pins.slice().sort((a, b) => (a.i === active ? -1 : b.i === active ? 1 : b.n - a.n));
+      for (const p of pins) {
+        const [x, y] = P(p.lon, p.lat);
+        if (x < -30 || y < -30 || x > W + 30 || y > H + 30) continue;
+        const on = p.i === active;
+        const ph = ((now / 2400) + p.i * 0.37) % 1;
+        ctx.beginPath();
+        ctx.arc(x, y, (on ? 7 : 4) + ph * (on ? 22 : 14), 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255, 125, 156, ${(on ? 0.7 : 0.45) * (1 - ph)})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        const g = ctx.createRadialGradient(x, y, 0, x, y, on ? 18 : 11);
+        g.addColorStop(0, 'rgba(255, 125, 156, .75)');
+        g.addColorStop(1, 'rgba(255, 125, 156, 0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(x - 18, y - 18, 36, 36);
+        ctx.beginPath();
+        ctx.arc(x, y, on ? 4.6 : 3, 0, Math.PI * 2);
+        ctx.fillStyle = on ? '#fff' : '#ffe3ea';
+        ctx.fill();
+      }
+      ctx.textBaseline = 'middle';
+      for (const p of order) {
+        const [x, y] = P(p.lon, p.lat);
+        const on = p.i === active;
+        ctx.font = `${on ? 600 : 400} ${on ? 16 : 13}px "Story Kai", "UI Kai", "Songti SC", serif`;
+        const w = ctx.measureText(p.name).width;
+        const h = on ? 20 : 16;
+        let bx = x + 9;
+        let box = [bx, y - h / 2, w, h];
+        const hit = (b) => boxes.some((o) => b[0] < o[0] + o[2] + 4 && b[0] + b[2] + 4 > o[0] && b[1] < o[1] + o[3] && b[1] + b[3] > o[1]);
+        if (hit(box) || bx + w > W - 4) { bx = x - 9 - w; box = [bx, y - h / 2, w, h]; }
+        if ((hit(box) || bx < 4) && !on) continue;
+        boxes.push(box);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(11, 9, 16, .85)';
+        ctx.strokeText(p.name, bx, y + 1);
+        ctx.fillStyle = on ? '#fff' : 'rgba(255, 238, 244, .86)';
+        ctx.fillText(p.name, bx, y + 1);
+      }
+    }
+
+    function draw(now) {
+      if (!view || !W) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      drawLand();
+      drawRoute(now);
+      drawPins(now);
+    }
+
+    function onClick(e) {
+      const r = canvas.getBoundingClientRect();
+      const x = e.clientX - r.left;
+      const y = e.clientY - r.top;
+      let best = null; let bd = 22;
+      for (const p of pins) {
+        const [px, py] = P(p.lon, p.lat);
+        const d = Math.hypot(px - x, py - y);
+        if (d < bd) { bd = d; best = p; }
+      }
+      if (best) { following = true; select(best.i, true); }
+    }
+
+    function select(i, scrollCard) {
+      if (i === active && mode === 'place') return;
+      setMode('place', i);
+      if (scrollCard) {
+        const card = document.querySelector(`.trip[data-p="${i}"]`);
+        const list = $('#trips');
+        if (card && list) list.scrollTo({ left: card.offsetLeft - (list.clientWidth - card.offsetWidth) / 2, behavior: reduceMotion ? 'auto' : 'smooth' });
+      }
+    }
+
+    function setupTrips() {
+      const list = $('#trips');
+      if (!list) return;
+      let tm = 0;
+      const pick = () => {
+        const mid = list.scrollLeft + list.clientWidth / 2;
+        let best = null; let bd = Infinity;
+        list.querySelectorAll('.trip').forEach((c) => {
+          const d = Math.abs(c.offsetLeft + c.offsetWidth / 2 - mid);
+          if (d < bd) { bd = d; best = c; }
+        });
+        if (best) select(Number(best.dataset.p), false);
+      };
+      list.addEventListener('scroll', () => {
+        if (!following) return;
+        clearTimeout(tm);
+        tm = setTimeout(pick, 90);
+      }, { passive: true });
+      ['pointerdown', 'wheel', 'touchstart', 'keydown'].forEach((ev) => list.addEventListener(ev, () => { following = true; }, { passive: true }));
+      const go = (dir) => {
+        following = true;
+        const cards = [...list.querySelectorAll('.trip')];
+        let i = cards.findIndex((c) => Number(c.dataset.p) === active);
+        i = i < 0 ? 0 : Math.max(0, Math.min(cards.length - 1, i + dir));
+        select(Number(cards[i].dataset.p), true);
+      };
+      document.querySelector('.trips-nav.prev').addEventListener('click', () => go(-1));
+      document.querySelector('.trips-nav.next').addEventListener('click', () => go(1));
+      list.addEventListener('mouseover', (e) => {
+        const c = e.target.closest('.trip');
+        if (c && finePointer) { following = true; select(Number(c.dataset.p), false); }
+      });
+    }
+
+    return { setup };
+  })();
 
   /* ---------- ambience: starfield, pointer glow, floating hearts ---------- */
   function sky() {
