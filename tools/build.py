@@ -101,7 +101,7 @@ def exif_info(img: Image.Image):
 
 
 def video_info(path: Path):
-    """Return (datetime or None, duration seconds, width, height)."""
+    """Return (datetime or None, duration seconds, width, height, (lat, lon) or None)."""
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(path)],
@@ -109,7 +109,7 @@ def video_info(path: Path):
         ).stdout
         info = json.loads(out)
     except Exception:
-        return None, 0, 0, 0
+        return None, 0, 0, 0, None
     tags = {k.lower(): v for k, v in (info.get("format", {}).get("tags") or {}).items()}
     raw = tags.get("com.apple.quicktime.creationdate") or tags.get("creation_time")
     when = None
@@ -134,7 +134,15 @@ def video_info(path: Path):
             break
     if abs(rot) in (90, 270):
         w, h = h, w
-    return when, dur, w, h
+    where = None
+    iso = tags.get("com.apple.quicktime.location.iso6709") or tags.get("location")
+    if iso:
+        import re
+
+        m = re.match(r"([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)", iso)
+        if m:
+            where = (round(float(m.group(1)), 3), round(float(m.group(2)), 3))
+    return when, dur, w, h, where
 
 
 def file_time(path: Path) -> dt.datetime:
@@ -271,6 +279,98 @@ def expand_day(day):
     return out
 
 
+# ---------- places ----------
+
+def km_between(a, b):
+    import math
+
+    la1, lo1, la2, lo2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2
+    return 6371 * 2 * math.asin(math.sqrt(h))
+
+
+def assign_places(media, places, place_of, hours=6):
+    """Give each photo a place index. GPS decides first; a photo without GPS taken within a few
+    hours of one that has a place (an underwater camera, a saved copy) joins that place.
+    Only place names and city-level centres reach the site, never a photo's own coordinates."""
+    if not places:
+        return []
+    for m in media:
+        m.pop("place", None)
+        if m["name"] in place_of:
+            names = [p["name"] for p in places]
+            if place_of[m["name"]] in names:
+                m["place"] = names.index(place_of[m["name"]])
+            continue
+        if m.get("gps"):
+            best = min(range(len(places)), key=lambda i: km_between(m["gps"], (places[i]["lat"], places[i]["lon"])))
+            if km_between(m["gps"], (places[best]["lat"], places[best]["lon"])) <= places[best].get("km", 50):
+                m["place"] = best
+    timed = [(dt.datetime.fromisoformat(m["date"]), m["place"]) for m in media
+             if "place" in m and m["dq"] != "unknown" and "T" in m["date"]]
+    for m in media:
+        if "place" in m or m.get("gps") or m["dq"] == "unknown" or "T" not in m["date"] or m["name"] in place_of:
+            continue
+        t = dt.datetime.fromisoformat(m["date"])
+        near = min(timed, key=lambda x: abs(x[0] - t), default=None)
+        if near and abs(near[0] - t) <= dt.timedelta(hours=hours):
+            m["place"] = near[1]
+    used = sorted({m["place"] for m in media if "place" in m})
+    remap = {old: new for new, old in enumerate(used)}
+    for m in media:
+        if "place" in m:
+            m["place"] = remap[m["place"]]
+    return [{"name": places[i]["name"], "en": places[i].get("en", ""),
+             "lat": round(places[i]["lat"], 2), "lon": round(places[i]["lon"], 2)} for i in used]
+
+
+# ---------- cover mosaic ----------
+
+MOSAIC_TILES, MOSAIC_COLS, MOSAIC_EDGE = 60, 8, 96  # the opening heart has 60 cells
+
+
+def square_tile(path: Path, edge: int) -> Image.Image:
+    with Image.open(path) as im:
+        im.draft("RGB", (edge * 4, edge * 4))
+        im = ImageOps.exif_transpose(im).convert("RGB")
+    w, h = im.size
+    s = min(w, h)
+    left = (w - s) // 2
+    top = int((h - s) * 0.3)  # portraits: keep the upper part, where faces usually are
+    return im.crop((left, top, left + s, top + s)).resize((edge, edge), Image.LANCZOS)
+
+
+def build_mosaic(media, sources, favorites, state, key, vault):
+    """One small encrypted sprite of square thumbnails, so the opening heart needs a single request."""
+    photos = [m for m in media if m["type"] == "photo" and m["digest"] in sources]
+    if len(photos) < 8:
+        return None
+    fav = set(favorites)
+    pool = [m for m in photos if m["name"] in fav] or photos
+    if len(pool) < MOSAIC_TILES:
+        rest = [m for m in photos if m not in pool]
+        need = min(len(rest), MOSAIC_TILES - len(pool))
+        pool = pool + [rest[int(i * len(rest) / need)] for i in range(need)] if need else pool
+    if len(pool) > MOSAIC_TILES:
+        pool = [pool[int(i * len(pool) / MOSAIC_TILES)] for i in range(MOSAIC_TILES)]
+    pool.sort(key=lambda m: m["date"])
+    digest = hashlib.sha256((f"v1-{MOSAIC_EDGE}" + "".join(m["digest"] for m in pool)).encode()).hexdigest()
+    cached = state.get("mosaic")
+    if not cached or cached["hash"] != digest or not (vault / f"{cached['id']}.bin").exists():
+        rows = (len(pool) + MOSAIC_COLS - 1) // MOSAIC_COLS
+        sheet = Image.new("RGB", (MOSAIC_COLS * MOSAIC_EDGE, rows * MOSAIC_EDGE), (20, 14, 22))
+        for i, m in enumerate(pool):
+            sheet.paste(square_tile(sources[m["digest"]], MOSAIC_EDGE),
+                        ((i % MOSAIC_COLS) * MOSAIC_EDGE, (i // MOSAIC_COLS) * MOSAIC_EDGE))
+        buf = io.BytesIO()
+        sheet.save(buf, "WEBP", quality=74, method=5)
+        cached = {"hash": digest, "id": secrets.token_hex(8)}
+        (vault / f"{cached['id']}.bin").write_bytes(seal(key, buf.getvalue()))
+        state["mosaic"] = cached
+    return {"id": cached["id"], "n": len(pool), "cols": MOSAIC_COLS, "edge": MOSAIC_EDGE,
+            "ids": [m["s"] for m in pool]}
+
+
 # ---------- main ----------
 
 def load_json(path: Path, default):
@@ -329,6 +429,7 @@ def main():
     stems_with_still = {p.stem.lower() for p in files if p.suffix.lower() in IMAGE_EXT}
 
     media = []
+    sources = {}
     seen = set()
     used_blobs = {"m"}
     tmp = Path(tempfile.mkdtemp(prefix="love-build-"))
@@ -352,7 +453,7 @@ def main():
             if not have:
                 entry = {"name": p.name}
                 if ext in VIDEO_EXT:
-                    when, dur, w, h = video_info(p)
+                    when, dur, w, h, where = video_info(p)
                     if dur > args.max_video_seconds:
                         log(f"skip video longer than {args.max_video_seconds:.0f}s:", p.name)
                         continue
@@ -364,7 +465,7 @@ def main():
                     (vault / f"{entry['v']}.bin").write_bytes(seal(key, mp4.read_bytes()))
                     entry["dur"] = round(dur, 1)
                     entry["type"] = "video"
-                    where, model = None, "video"
+                    model = "video"
                 else:
                     with Image.open(p) as im:
                         when, where, model = exif_info(im)
@@ -385,7 +486,8 @@ def main():
                 state["media"][digest] = entry
                 log("added:", p.name, entry["date"])
             entry["name"] = p.name
-            media.append(entry)
+            sources[digest] = p
+            media.append({**entry, "digest": digest})  # a copy, so date overrides never leak into the state
             used_blobs.update(entry[k] for k in ("s", "l", "v") if k in entry)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -394,8 +496,10 @@ def main():
     dates = story.get("dates", {})
     for m in media:
         if m["name"] in dates:
-            m["date"] = dates[m["name"]]
-            m["dq"] = "manual"
+            d = dates[m["name"]]
+            # "~2024-05-04" marks a date worked out from file times or neighbours, not read from the photo.
+            m["dq"] = "approx" if d.startswith("~") else "manual"
+            m["date"] = d.lstrip("~")
     media.sort(key=lambda m: m["date"])
     unknown = [m["name"] for m in media if m["dq"] == "unknown"]
     if unknown:
@@ -403,6 +507,7 @@ def main():
 
     by_name = {m["name"]: m for m in media}
     captions = story.get("captions", {})
+    places = assign_places(media, story.get("places", []), story.get("placeOf", {}))
 
     def ref(name):
         return by_name[name]["s"] if name in by_name else None
@@ -420,16 +525,23 @@ def main():
         ],
         "letter": story.get("letter"),
         "days": [expand_day(d) for d in story.get("days", [])],
+        "hero": [by_name[n]["s"] for n in story.get("hero", []) if n in by_name],
+        "places": places,
         "media": [
             {
                 "id": m["s"], "l": m["l"], "v": m.get("v"), "type": m["type"],
                 "w": m["w"], "h": m["h"], "c": m["c"], "date": m["date"], "dq": m["dq"],
                 "dur": m.get("dur"), "cap": captions.get(m["name"], ""),
                 "fav": m["name"] in set(story.get("favorites", [])),
+                "p": m.get("place"),
             }
             for m in media
         ],
     }
+    mosaic = build_mosaic(media, sources, story.get("favorites", []), state, key, vault)
+    if mosaic:
+        manifest["mosaic"] = mosaic
+        used_blobs.add(mosaic["id"])
     lock = story.get("lock", {})
     if args.zh_font:
         table = load_font_table(args.zh_font)
