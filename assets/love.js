@@ -913,7 +913,7 @@
     return out;
   }
 
-  /* ---------- hero: a slow slideshow of the best photos ---------- */
+  /* ---------- hero: a slow slideshow of the photos picked in story.json ---------- */
   const hero = (() => {
     let slides = [];
     let idx = 0;
@@ -925,17 +925,28 @@
 
     function choose() {
       const ids = data.hero && data.hero.length ? data.hero : data.cover ? [data.cover] : [];
-      const list = ids.map((id) => byId.get(id)).filter(Boolean);
-      const wide = innerWidth >= innerHeight;
-      // Landscape photos for a wide screen; portrait and square ones for a phone.
-      const fit = list.filter((m) => (wide ? m.w / m.h > 1.1 : m.w / m.h <= 1.1));
-      slides = fit.length >= 3 ? fit : list;
+      slides = ids.map((id) => byId.get(id)).filter(Boolean);
       if (!slides.length && data.media.length) slides = [data.media[0]];
+    }
+    // Filling the screen with a photo of a very different shape crops the faces off,
+    // so such a photo is shown whole, over a blurred copy of itself.
+    function look(m) {
+      const screen = innerWidth / innerHeight;
+      const photo = m.w / m.h;
+      const whole = Math.min(screen / photo, photo / screen) < 0.6;
+      const pos = whole ? (photo > 1 ? '50% 38%' : '50% 50%') : m.h > m.w ? '50% 30%' : '50% 50%';
+      return { whole, pos };
     }
     function prepare() {
       const box = $('#hero-media');
       if (!box) return;
-      layers = [0, 1].map(() => { const img = document.createElement('img'); img.alt = ''; box.appendChild(img); return img; });
+      layers = [0, 1].map(() => {
+        const el = document.createElement('div');
+        el.className = 'slide';
+        el.innerHTML = '<img class="bg" alt=""><img class="fg" alt="">';
+        box.appendChild(el);
+        return el;
+      });
       if (!slides.length) choose();
       new IntersectionObserver((es) => { visible = es[0].isIntersecting; }).observe($('#top'));
     }
@@ -954,16 +965,19 @@
       const m = slides[i];
       if (!m) return Promise.resolve();
       return blobURL(m.l, 'image/webp', i === 0).then((u) => new Promise((resolve) => {
-        const img = layers[i % 2];
+        const el = layers[i % 2];
         const other = layers[(i + 1) % 2];
-        img.onload = () => {
-          img.style.objectPosition = m.h > m.w ? '50% 30%' : '50% 50%';
-          img.className = `on kb${i % 4}`;
+        const [bg, fg] = el.children;
+        const { whole, pos } = look(m);
+        fg.onload = () => {
+          fg.style.objectPosition = pos;
+          el.className = `slide on kb${i % 4}${whole ? ' whole' : ''}`;
           other.classList.remove('on');
           meta(m);
           resolve();
         };
-        img.src = u;
+        if (whole) bg.src = u;
+        fg.src = u;
       })).catch(() => {});
     }
     function loop() {
@@ -986,7 +1000,7 @@
         if (!reduceMotion) loop();
       });
     }
-    return { prepare, start, first };
+    return { prepare, start, first, look };
   })();
 
   /* ---------- opening: the photos gather into a heart, which opens into the cover ---------- */
@@ -1043,7 +1057,7 @@
     const el = document.createElement('div');
     el.className = 'intro';
     el.innerHTML = `<div class="intro-heart" style="left:${left}px;top:${top}px;width:${W}px;height:${H}px"></div>
-      <div class="intro-cover"><img alt=""></div>
+      <div class="intro-cover"><img class="bg" alt=""><img class="fg" alt=""></div>
       <div class="intro-cap" style="top:${top + H + 26}px"></div>
       ${hasSeal() ? `<div class="intro-seal" style="left:${(vw - W * 0.46) / 2}px;top:${top + H * 0.44 - W * 0.23}px;width:${W * 0.46}px;height:${W * 0.46}px">${sealSVG('is-intro')}</div>` : ''}
       <button class="intro-skip" type="button">跳过</button>`;
@@ -1109,10 +1123,14 @@
 
     const url = skipped ? null : await Promise.race([coverURL, sleep(1800).then(() => null)]).catch(() => null);
     if (url && !skipped) {
-      const img = coverEl.querySelector('img');
+      const img = coverEl.querySelector('.fg');
       img.src = url;
       try { await img.decode(); } catch (e) { /* draw anyway */ }
-      if (cover && cover.h > cover.w) img.style.objectPosition = '50% 30%';
+      if (cover) {
+        const { whole, pos } = hero.look(cover);
+        img.style.objectPosition = pos;
+        if (whole) { coverEl.classList.add('whole'); coverEl.querySelector('.bg').src = url; }
+      }
       const mask = heartMask(rows);
       const setMask = (w, h, x, y) => {
         coverEl.style.webkitMaskImage = mask; coverEl.style.maskImage = mask;
