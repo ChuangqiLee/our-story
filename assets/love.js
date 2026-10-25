@@ -557,6 +557,7 @@
     html += sealHTML();
     html += todayHTML(days);
     html += statsHTML(media, since, months);
+    html += moonHTML(since);
     html += favsHTML(favs);
     html += doorsHTML();
     return html;
@@ -585,6 +586,145 @@
       ${places.length ? `<div class="stat"><b>${places.length}</b><span>个一起去过的地方</span><small>PLACES</small></div>` : `<div class="stat"><b>${months.length}</b><span>个留下回忆的月份</span><small>MONTHS</small></div>`}
       ${next ? `<div class="stat"><b>${next.days}</b><span>${next.days === 0 ? `今天就是 ${next.n} 周年` : `天后是 ${next.n} 周年`}</span><small>ANNIVERSARY</small></div>` : ''}
     </div></div></section>`;
+  }
+
+  /* ---------- the moon: how it looked the night we got together, and how it looks tonight ---------- */
+  const moon = (() => {
+    const rad = Math.PI / 180;
+    const sin = (d) => Math.sin(d * rad);
+    const cos = (d) => Math.cos(d * rad);
+    const jd = (t) => t / DAY + 2440587.5;
+    const fromJD = (j) => new Date((j - 2440587.5) * DAY);
+    const BJ = 8 * 3600000; // the lunar calendar counts days in Beijing time
+
+    // How much of the moon is lit, and whether it is growing (low precision, well within a percent).
+    function at(t) {
+      const d = jd(t) - 2451545;
+      const M = 357.5291 + 0.98560028 * d;
+      const sun = 280.459 + 0.98564736 * d + 1.915 * sin(M) + 0.02 * sin(2 * M);
+      const Mm = 134.963 + 13.064993 * d;
+      const D = 297.85 + 12.190749 * d;
+      const lon = 218.316 + 13.176396 * d + 6.289 * sin(Mm) - 1.274 * sin(Mm - 2 * D) + 0.658 * sin(2 * D) + 0.214 * sin(2 * Mm) - 0.186 * sin(M) - 0.114 * sin(2 * (93.272 + 13.22935 * d));
+      const e = (((lon - sun) % 360) + 360) % 360;
+      return { lit: (1 - cos(e)) / 2, waxing: e < 180, e };
+    }
+
+    // New moon (full = false) or full moon number k counted from January 2000, after Meeus, Astronomical Algorithms ch. 49.
+    function phase(k, full) {
+      if (full) k += 0.5;
+      const T = k / 1236.85;
+      const E = 1 - 0.002516 * T - 0.0000074 * T * T;
+      const M = 2.5534 + 29.1053567 * k - 0.0000014 * T * T;
+      const Mm = 201.5643 + 385.81693528 * k + 0.0107582 * T * T + 0.00001238 * T ** 3;
+      const F = 160.7108 + 390.67050284 * k - 0.0016118 * T * T;
+      const O = 124.7746 - 1.56375588 * k + 0.0020672 * T * T;
+      const c = full ? [-0.40614, 0.17302, 0.01614, 0.01043, 0.00734, -0.00515, 0.00209] : [-0.4072, 0.17241, 0.01608, 0.01039, 0.00739, -0.00514, 0.00208];
+      const j = 2451550.09766 + 29.530588861 * k + 0.00015437 * T * T
+        + c[0] * sin(Mm) + c[1] * E * sin(M) + c[2] * sin(2 * Mm) + c[3] * sin(2 * F) + c[4] * E * sin(Mm - M) + c[5] * E * sin(Mm + M) + c[6] * E * E * sin(2 * M)
+        - 0.00111 * sin(Mm - 2 * F) - 0.00057 * sin(Mm + 2 * F) + 0.00056 * E * sin(2 * Mm + M) - 0.00042 * sin(3 * Mm)
+        + 0.00042 * E * sin(M + 2 * F) + 0.00038 * E * sin(M - 2 * F) - 0.00024 * E * sin(2 * Mm - M) - 0.00017 * sin(O)
+        - 0.0008; // TT to UT
+      return fromJD(j);
+    }
+    const kNear = (t) => Math.floor((t - Date.UTC(2000, 0, 6, 18, 14)) / (29.530588861 * DAY));
+    // The Beijing calendar day of an instant, as a local Date at midnight (what the rest of the site uses).
+    const bjDay = (t) => { const b = new Date(t + BJ); return new Date(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate()); };
+
+    // Full moons whose Beijing day falls after day a and up to day b (both local midnights).
+    function fulls(a, b) {
+      const out = [];
+      for (let k = kNear(a.getTime()) - 1; ; k += 1) {
+        const t = phase(k, true);
+        const d = bjDay(t.getTime());
+        if (d > b) break;
+        if (d > a) out.push(d);
+      }
+      return out;
+    }
+
+    const NUM = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+    const dayName = (n) => (n <= 10 ? `初${NUM[n]}` : n < 20 ? `十${NUM[n - 10]}` : n === 20 ? '二十' : n < 30 ? `廿${NUM[n - 20]}` : '三十');
+    let fmt = null;
+    try { fmt = new Intl.DateTimeFormat('zh-CN-u-ca-chinese', { timeZone: 'Asia/Shanghai', month: 'long', day: 'numeric' }); } catch (e) { /* no Chinese calendar here */ }
+    // "六月廿一": the month from the browser's Chinese calendar when it has one, the day from the new moons.
+    function lunar(day) {
+      const noon = Date.UTC(day.getFullYear(), day.getMonth(), day.getDate(), 4); // noon in Beijing
+      let k = kNear(noon) + 1;
+      while (bjDay(phase(k, false).getTime()) > day) k -= 1;
+      const n = Math.round((day - bjDay(phase(k, false).getTime())) / DAY) + 1;
+      let month = '';
+      if (fmt) {
+        const parts = fmt.formatToParts(new Date(noon));
+        const m = parts.find((x) => x.type === 'month');
+        const d = parts.find((x) => x.type === 'day');
+        if (m && /月$/.test(m.value) && (!d || Number(d.value) === n)) month = m.value.replace(/^十一月$/, '冬月').replace(/^十二月$/, '腊月');
+      }
+      return `${month}${dayName(n)}`;
+    }
+
+    // Only the night of the full moon is called full; the night before it is still growing.
+    function name(m, full) {
+      if (full) return '满月';
+      if (m.lit < 0.02) return '新月';
+      if (Math.abs(m.lit - 0.5) < 0.06) return m.waxing ? '上弦月' : '下弦月';
+      if (m.lit < 0.5) return m.waxing ? '蛾眉月' : '残月';
+      return m.waxing ? '盈凸月' : '亏凸月';
+    }
+
+    // The evening of a day, 9 pm in Beijing.
+    const evening = (day) => Date.UTC(day.getFullYear(), day.getMonth(), day.getDate(), 13);
+
+    function svg(m, id) {
+      const r = 46;
+      const rx = (r * Math.abs(1 - 2 * m.lit)).toFixed(2);
+      const lit = `M0 ${-r}A${r} ${r} 0 0 1 0 ${r}A${rx} ${r} 0 0 ${m.lit < 0.5 ? 0 : 1} 0 ${-r}Z`;
+      const craters = [[-14, -18, 9], [16, -8, 6], [-4, 14, 11], [22, 20, 5], [-26, 6, 5], [6, -30, 4], [-16, 30, 4], [30, -4, 3.5]];
+      return `<svg class="moon-svg" viewBox="-60 -60 120 120" aria-hidden="true">
+        <defs>
+          <radialGradient id="${id}-g" cx="-.25" cy="-.3" r="1.1"><stop offset="0" stop-color="#fff9f0"/><stop offset=".6" stop-color="#f6e7d4"/><stop offset="1" stop-color="#d8c2ad"/></radialGradient>
+          <radialGradient id="${id}-h"><stop offset=".55" stop-color="rgba(255, 236, 214, .32)"/><stop offset="1" stop-color="rgba(255, 236, 214, 0)"/></radialGradient>
+          <clipPath id="${id}-c"><path d="${lit}" transform="${m.waxing ? '' : 'scale(-1 1)'}"/></clipPath>
+        </defs>
+        <circle r="60" fill="url(#${id}-h)" opacity="${(0.25 + m.lit * 0.75).toFixed(2)}"/>
+        <circle r="${r}" fill="#1d1820"/>
+        <g clip-path="url(#${id}-c)"><circle r="${r}" fill="url(#${id}-g)"/>${craters.map(([x, y, s]) => `<circle cx="${x}" cy="${y}" r="${s}" fill="#c9b19c" opacity=".38"/>`).join('')}</g>
+        <circle r="${r}" fill="none" stroke="rgba(255, 240, 225, .14)"/>
+      </svg>`;
+    }
+
+    return { at, phase, fulls, lunar, name, evening, svg, bjDay };
+  })();
+
+  function moonHTML(since) {
+    if (!since) return '';
+    const today = todayDate();
+    const day = (d, k) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + k);
+    const fullToday = moon.fulls(day(today, -1), today).length > 0;
+    const count = moon.fulls(since, today).length;
+    const next = moon.fulls(today, day(today, 40))[0];
+    const left = next ? Math.round((next - today) / DAY) : 0;
+    const fig = (d, m, id, when, full) => `<figure class="moon-fig${full ? ' full' : ''}">
+      ${moon.svg(m, id)}
+      <figcaption><small>${fmtDate(d)} · ${when}</small><b>农历${moon.lunar(d)}</b><span>${moon.name(m, full)} · 亮了 ${Math.round(m.lit * 100)}%</span></figcaption>
+    </figure>`;
+    const then = moon.at(moon.evening(since));
+    const now = moon.at(moon.evening(today));
+    const n = count + (fullToday ? 0 : 1);
+    const line = fullToday ? `今晚就是满月，第 ${count} 次。`
+      : left === 1 ? `明天晚上就是第 ${n} 次满月。`
+        : next ? `下一次满月在 ${next.getMonth() + 1} 月 ${next.getDate()} 日，还有 ${left} 天。` : '';
+    return `<section class="sec moon-sec" id="moon"><div class="wrap">
+      <header class="sec-head reveal"><p class="kicker">The moon that night</p><h2>那天的月亮</h2><p class="lead">在一起的那天夜里，天上挂着的就是这样一个月亮。是照着天文算出来的，和那晚真的月亮一样。</p></header>
+      <div class="moons reveal">
+        ${fig(since, then, 'mn-a', '那天夜里', false)}
+        <div class="moon-mid">
+          <p><b>${count}</b><span>次月圆</span></p>
+          <div class="beads" aria-hidden="true">${Array.from({ length: n }, (_, k) => `<i style="--i:${k}"${k >= count ? ' class="yet"' : ''}></i>`).join('')}</div>
+        </div>
+        ${fig(today, now, 'mn-b', '今晚', fullToday)}
+      </div>
+      <p class="moon-line reveal">在一起以后，月亮已经圆了 ${count} 次。${line}</p>
+    </div></section>`;
   }
 
   // Photos from this day in earlier years; failing that, from these few days, or this month.
@@ -676,6 +816,7 @@
       photos: (fan.length >= 3 ? fan : [...fan, ...favs]).slice(-4),
     });
     html += firstsHTML();
+    html += yearlyHTML(since);
     const items = timelineItems(months, withAnniversaries(data.milestones || [], since, media), data.chapters || {});
     if (items.length) {
       let lastYear = null;
@@ -731,17 +872,53 @@
     </div></section>`;
   }
 
+  // One photo a year, side by side: the favourite taken nearest our anniversary, unless story.json names one.
+  function yearlyHTML(since) {
+    if (!since) return '';
+    const y0 = since.getFullYear();
+    const y1 = todayDate().getFullYear();
+    if (y1 === y0) return '';
+    const pickYear = (y) => {
+      const named = data.yearly && data.yearly[y] && byId.get(data.yearly[y]);
+      if (named) return named;
+      const ann = new Date(y, since.getMonth(), since.getDate());
+      const list = data.media.filter((m) => m.type === 'photo' && m.dq !== 'unknown' && m.date.startsWith(String(y)));
+      const favs = list.filter((m) => m.fav);
+      let best = null;
+      (favs.length ? favs : list).forEach((m) => { const d = Math.abs(parseDay(m.date) - ann); if (!best || d < best.d) best = { m, d }; });
+      return best && best.m;
+    };
+    const years = [];
+    for (let y = y0; y <= y1; y += 1) years.push([y, pickYear(y)]);
+    sets.yearly = years.map(([, m]) => m && m.id).filter(Boolean);
+    return `<section class="sec yearly-sec" id="yearly"><div class="wrap">
+      <header class="sec-head reveal"><p class="kicker">One a year</p><h2>一年一张</h2><p class="lead">每年挑一张离纪念日最近的合照，并排放着，看看这几年的我们。</p></header>
+      <div class="years" style="--n:${years.length}">${years.map(([y, m], k) => {
+        const exact = m && m.dq !== 'approx';
+        const sub = m ? `<small>${dateLabel(m)}</small>${exact ? `<span>在一起第 ${nf.format(Math.round((parseDay(m.date) - since) / DAY) + 1)} 天</span>` : ''}`
+          : `<small>${y === y0 ? fmtDate(since) : ''}</small><span>${y === y0 ? '在一起了' : '这一年的照片还空着'}</span>`;
+        return `<figure class="yr reveal" style="transition-delay:${k * 0.09}s">
+          <div class="yr-ph">${m ? photoButton(m, { set: 'yearly' }) : `<div class="yr-blank">${HEART}<span>${y === y0 ? '故事从这一年开始' : '还没有照片'}</span></div>`}</div>
+          <figcaption><b>${y}</b>${sub}</figcaption>
+        </figure>`;
+      }).join('')}</div>
+    </div></section>`;
+  }
+
   /* 03 places and moments: the map and its trips, then every photo */
   function mapHTML(p, groups, media) {
     const years = [...new Set(media.map((m) => m.date.slice(0, 4)))];
+    const trip = journey();
+    const km = trip.stops.length > 1 ? Math.round(trip.km) : 0;
+    const earth = aroundEarth(km);
     const lead = groups.length
-      ? `照片里的定位整理出 ${groups.length} 个一起去过的地方。左右滑动画册，地图会跟着飞过去；再往下，是全部 ${nf.format(media.length)} 个瞬间。`
+      ? `照片里的定位整理出 ${groups.length} 个一起去过的地方。${km ? `按时间把它们连起来，一共 ${nf.format(km)} 公里${earth ? `，${earth}` : ''}。` : ''}再往下，是全部 ${nf.format(media.length)} 个瞬间。`
       : `一共 ${nf.format(media.length)} 个瞬间。点开任意一张，可以左右翻看。`;
     return pageHead(p, lead, {
       facts: [
         ...(groups.length ? [[String(groups.length), '个一起去过的地方']] : []),
+        ...(km ? [[nf.format(km), '公里的路']] : [[String(years.length), '个年头']]),
         [nf.format(media.length), '个瞬间'],
-        [String(years.length), '个年头'],
       ],
       photos: groups.length >= 4 ? groups.slice(-4).map(tripCover) : media.filter((m) => m.fav).slice(0, 4),
     }) + atlasHTML(groups) + galleryHTML(media, years);
@@ -1106,6 +1283,10 @@
       document.querySelectorAll('#nav a, #brand').forEach((a) => a.addEventListener('click', () => {
         if ((a.dataset.page ?? '') === current) scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
       }));
+    }
+    if (!$('#miss-btn')) {
+      document.body.insertAdjacentHTML('beforeend', `<button class="miss-btn" id="miss-btn" type="button" aria-label="想你了，点一下">${HEART}<span>想你</span></button>`);
+      $('#miss-btn').addEventListener('click', () => missYou.open());
     }
     if (music.has() && !$('#music-btn')) {
       document.body.insertAdjacentHTML('beforeend', `<button class="music-btn" id="music-btn" type="button" aria-pressed="false" aria-label="播放音乐">
@@ -1801,6 +1982,29 @@
     return groups.filter((g) => g.list.length).sort((x, y) => (x.first < y.first ? -1 : 1));
   }
 
+  // Every place we went, in the order we went there, and how far that is in straight lines.
+  function journey() {
+    const rad = Math.PI / 180;
+    const far = (a, b) => {
+      const h = Math.sin(((b.lat - a.lat) * rad) / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(((b.lon - a.lon) * rad) / 2) ** 2;
+      return 2 * 6371 * Math.asin(Math.sqrt(h));
+    };
+    const stops = [];
+    let km = 0;
+    data.media.forEach((m) => {
+      const pl = placeOf(m);
+      const last = stops[stops.length - 1];
+      if (!pl || m.dq === 'unknown' || (last && last.i === m.p)) return;
+      if (last) km += far(last.pl, pl);
+      stops.push({ i: m.p, pl, m, km });
+    });
+    return { stops, km };
+  }
+  const aroundEarth = (km) => {
+    const r = km / 40075;
+    return r >= 1 ? `够绕地球 ${r.toFixed(1)} 圈了` : r >= 0.2 ? `差不多绕了地球${r < 0.45 ? '小半' : r < 0.55 ? '半' : '大半'}圈` : '';
+  };
+
   function atlasHTML(groups) {
     if (!groups.length) return '';
     const range = (g) => {
@@ -1832,6 +2036,11 @@
           <button type="button" data-view="world" aria-pressed="false">全世界</button>
         </div>
         <div class="atlas-now" id="atlas-now" aria-live="polite"></div>
+        ${journey().stops.length > 1 ? `<div class="atlas-km">
+          <small>我们走过的路</small>
+          <p><b id="km-n">0</b><span>公里</span></p>
+          <button class="km-play" id="km-play" type="button" aria-pressed="false">${PLAY}${PAUSE}<em>沿着时间重走一遍</em></button>
+        </div>` : ''}
       </div>
       <div class="trips-wrap reveal">
         <button class="trips-nav prev" type="button" aria-label="上一站"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg></button>
@@ -1848,6 +2057,7 @@
     let groups = []; let pins = []; let route = [];
     let view = null; let flight = null; let mode = 'fit'; let active = -1;
     let routeP = 0; let routeStart = 0; let visible = false; let raf = 0; let following = false;
+    let trip = null; let tour = null; let done = false; let shownKm = -1;
 
     const P = (lon, lat, v = view) => [W / 2 + (lon - v.lon) * K * v.s, H / 2 - (lat - v.lat) * v.s];
 
@@ -1881,7 +2091,7 @@
         if (!seen.has(k)) { seen.add(k); route.push([a, b]); }
       }
       // The page is still hidden while this runs, so size the canvas once it is laid out.
-      new ResizeObserver(() => { resize(); if (W && !flight) view = targetFor(); kick(); }).observe(canvas);
+      new ResizeObserver(() => { resize(); if (W && !flight && !tour) view = targetFor(); kick(); }).observe(canvas);
       new IntersectionObserver((es) => {
         visible = es[0].isIntersecting;
         if (visible) {
@@ -1893,6 +2103,8 @@
       canvas.addEventListener('click', onClick);
       document.querySelectorAll('.atlas-ctl button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.view)));
       setupTrips();
+      trip = journey();
+      $('#km-play')?.addEventListener('click', () => (tour ? stopTour() : startTour()));
     }
 
     function loadLand() {
@@ -1913,10 +2125,12 @@
       canvas.height = Math.round(H * dpr);
     }
 
+    const pressCtl = (m) => document.querySelectorAll('.atlas-ctl button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === m)));
     function setMode(m, placeIndex) {
+      if (tour) stopTour();
       mode = m;
       if (m === 'place') active = placeIndex; else if (m !== 'place') active = -1;
-      document.querySelectorAll('.atlas-ctl button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === m)));
+      pressCtl(m);
       document.querySelectorAll('.trip').forEach((t) => t.classList.toggle('on', Number(t.dataset.p) === active));
       const now = $('#atlas-now');
       if (now) {
@@ -1927,12 +2141,98 @@
       flyTo(targetFor());
     }
 
-    function flyTo(to) {
+    function flyTo(to, quick = 1) {
       if (!view || !W) { view = to; return; }
       const from = { ...view };
       const dist = Math.hypot((to.lon - from.lon) * K, to.lat - from.lat);
-      flight = { from, to, t0: performance.now(), dur: reduceMotion ? 1 : 900 + Math.min(900, dist * 18), dip: Math.min(1.1, dist / 30) };
+      flight = { from, to, t0: performance.now(), dur: reduceMotion ? 1 : (900 + Math.min(900, dist * 18)) * quick, dip: Math.min(1.1, dist / 30) };
       kick();
+    }
+
+    /* ---------- walking the whole way again, stop by stop ---------- */
+    function odometer(km) {
+      const n = Math.round(km);
+      if (n === shownKm) return;
+      shownKm = n;
+      const e = $('#km-n');
+      if (e) e.textContent = nf.format(n);
+    }
+    function playButton(on) {
+      const b = $('#km-play');
+      if (!b) return;
+      b.setAttribute('aria-pressed', String(on));
+      b.querySelector('em').textContent = on ? '停下' : done ? '再走一遍' : '沿着时间重走一遍';
+    }
+    function caption(html) {
+      const now = $('#atlas-now');
+      if (!now) return;
+      now.innerHTML = html;
+      now.classList.toggle('on', !!html);
+    }
+    const legView = (k) => fitView([trip.stops[k].pl, trip.stops[k + 1].pl], Math.min(W, H) * 0.2);
+    function arrive(k) {
+      const st = trip.stops[k];
+      active = st.i;
+      caption(`<b>${esc(st.pl.name)}</b><span>第 ${k + 1} 站 · ${dateLabel(st.m)}</span>`);
+    }
+    function startTour() {
+      if (!trip || trip.stops.length < 2 || !W) return;
+      mode = 'fit';
+      pressCtl('');
+      document.querySelectorAll('.trip').forEach((t) => t.classList.remove('on'));
+      following = false;
+      done = false;
+      routeP = 1;
+      tour = { leg: 0, ph: 'fly', t0: 0, e: 0 };
+      odometer(0);
+      arrive(0);
+      playButton(true);
+      flyTo(legView(0), 0.8);
+    }
+    function stopTour() {
+      tour = null;
+      active = -1;
+      odometer(trip.km);
+      caption('');
+      playButton(false);
+    }
+    function finishTour() {
+      const s = trip.stops;
+      tour = null;
+      done = true;
+      active = -1;
+      mode = 'fit';
+      pressCtl('fit');
+      flyTo(targetFor());
+      odometer(trip.km);
+      caption(`<b>${s.length} 站</b><span>${s[0].m.date.slice(0, 7).replace('-', '.')} – ${s[s.length - 1].m.date.slice(0, 7).replace('-', '.')}</span>`);
+      playButton(false);
+      const r = $('#km-n')?.getBoundingClientRect();
+      if (r && r.top < innerHeight && r.bottom > 0) sprinkle(r.left + r.width / 2, r.top, 6);
+    }
+    function tourStep(now) {
+      const s = trip.stops;
+      const t = tour;
+      if (t.ph === 'fly') {
+        if (flight) return;
+        t.ph = 'move';
+        t.t0 = now;
+        t.dur = reduceMotion ? 1 : 650 + Math.min(1100, (s[t.leg + 1].km - s[t.leg].km) * 0.24);
+        return;
+      }
+      if (t.ph === 'move') {
+        const f = Math.min(1, (now - t.t0) / t.dur);
+        t.e = f < 0.5 ? 2 * f * f : 1 - (-2 * f + 2) ** 2 / 2;
+        odometer(s[t.leg].km + (s[t.leg + 1].km - s[t.leg].km) * t.e);
+        if (f >= 1) { t.ph = 'rest'; t.t0 = now; arrive(t.leg + 1); }
+        return;
+      }
+      if (now - t.t0 < (reduceMotion ? 1000 : 520)) return;
+      t.leg += 1;
+      if (t.leg >= s.length - 1) { finishTour(); return; }
+      t.ph = 'fly';
+      t.e = 0;
+      flyTo(legView(t.leg), 0.75);
     }
 
     const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
@@ -1945,7 +2245,11 @@
         view = { lon: from.lon + (to.lon - from.lon) * e, lat: from.lat + (to.lat - from.lat) * e, s: Math.exp(ls) };
         if (t >= 1) { view = to; flight = null; }
       }
-      if (routeStart && now > routeStart) routeP = reduceMotion ? 1 : Math.min(1, (now - routeStart) / 3200);
+      if (tour) tourStep(now);
+      else if (routeStart && now > routeStart && routeP < 1) {
+        routeP = reduceMotion ? 1 : Math.min(1, (now - routeStart) / 3200);
+        if (trip && !done) odometer(trip.km * (1 - (1 - routeP) ** 3)); // the kilometres count up as the route draws itself
+      }
     }
 
     function kick() {
@@ -2015,7 +2319,9 @@
       if (!route.length) return;
       const n = route.length;
       const k = routeP * n;
+      const walked = tour || done;
       ctx.save();
+      if (walked) ctx.globalAlpha = 0.3;
       ctx.lineWidth = 1.3;
       ctx.strokeStyle = 'rgba(255, 160, 180, .75)';
       ctx.shadowColor = 'rgba(255, 125, 156, .8)';
@@ -2035,6 +2341,7 @@
       }
       ctx.stroke();
       ctx.restore();
+      if (walked) { drawWalk(now); return; }
       if (routeP >= 1 && !reduceMotion) { // a small light keeps travelling the route
         const T = (now / 1000 / 2.2) % n;
         const i = Math.floor(T);
@@ -2047,6 +2354,73 @@
         g.addColorStop(1, 'rgba(255, 125, 156, 0)');
         ctx.fillStyle = g;
         ctx.fillRect(x - 9, y - 9, 18, 18);
+      }
+    }
+
+    // One leg of the journey, as points along the same curve the dashed route uses, up to a fraction of the way.
+    function legPts(k, upto = 1) {
+      const a = trip.stops[k].pl;
+      const b = trip.stops[k + 1].pl;
+      const back = a.lon > b.lon; // the route always bends as if drawn from west to east
+      const [x0, y0, cx, cy, x2, y2] = back ? seg(b, a) : seg(a, b);
+      const n = Math.max(1, Math.ceil(40 * upto));
+      const pts = [];
+      for (let j = 0; j <= n; j += 1) {
+        const u = (upto * j) / n;
+        const t = back ? 1 - u : u;
+        pts.push([(1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x2, (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y2]);
+      }
+      return pts;
+    }
+    function glowAt(x, y, r, a = 1) {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(255, 255, 255, ${a})`);
+      g.addColorStop(0.28, `rgba(255, 205, 220, ${a * 0.85})`);
+      g.addColorStop(1, 'rgba(255, 125, 156, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    function drawWalk(now) {
+      const legs = trip.stops.length - 1;
+      const full = done ? legs : tour.leg;
+      const line = (pts) => pts.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      let head = null;
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 2.2;
+      ctx.strokeStyle = 'rgba(255, 186, 204, .95)';
+      ctx.shadowColor = 'rgba(255, 105, 145, 1)';
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      for (let k = 0; k < full; k += 1) line(legPts(k));
+      if (tour && tour.ph !== 'fly') {
+        const pts = legPts(tour.leg, tour.ph === 'move' ? tour.e : 1);
+        line(pts);
+        if (tour.ph === 'move') head = pts;
+      }
+      ctx.stroke();
+      ctx.restore();
+      if (head) {
+        // a comet: a bright head and a tail that thins out behind it
+        for (let j = Math.max(1, head.length - 12); j < head.length; j += 1) {
+          const k = (j - head.length + 12) / 12;
+          ctx.beginPath();
+          ctx.moveTo(head[j - 1][0], head[j - 1][1]);
+          ctx.lineTo(head[j][0], head[j][1]);
+          ctx.strokeStyle = `rgba(255, 245, 248, ${k * 0.9})`;
+          ctx.lineWidth = 1 + k * 3;
+          ctx.stroke();
+        }
+        const [x, y] = head[head.length - 1];
+        glowAt(x, y, 18);
+      } else if (done && !reduceMotion) {
+        // a light keeps walking the way, in the order we went
+        const T = (now / 1000 / 1.6) % legs;
+        const k = Math.floor(T);
+        const pts = legPts(k, T - k);
+        const [x, y] = pts[pts.length - 1];
+        glowAt(x, y, 10, 0.9);
       }
     }
 
@@ -2280,6 +2654,149 @@
       else last = { t: now, x: e.clientX, y: e.clientY };
     }, { passive: true });
   }
+
+  /* ---------- "missing you": hearts all over the screen, then an old photo of us ---------- */
+  function heartRain() {
+    if (reduceMotion) return null;
+    const c = document.createElement('canvas');
+    c.className = 'confetti';
+    c.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(c);
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    const w = innerWidth;
+    const h = innerHeight;
+    c.width = w * dpr;
+    c.height = h * dpr;
+    const g = c.getContext('2d');
+    const heart = new Path2D(HEART_PATH);
+    const colors = ['#ff7d9c', '#ffb3c6', '#ffd1dc', '#ff5f87', '#ffb68c', '#fff0f4'];
+    const bits = Array.from({ length: Math.round(Math.min(72, 34 + w / 28)) }, (_, i) => ({
+      x: Math.random() * w, y: h + 20 + Math.random() * h * 0.7, s: 0.7 + Math.random() * 1.7, v: 0.22 + Math.random() * 0.3,
+      sway: 10 + Math.random() * 28, ph: Math.random() * 6, c: colors[i % colors.length], r: (Math.random() - 0.5) * 0.6,
+    }));
+    const t0 = performance.now();
+    let last = t0;
+    const frame = (t) => {
+      const dt = Math.min(48, t - last);
+      last = t;
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, w, h);
+      let alive = 0;
+      for (const b of bits) {
+        b.y -= b.v * dt * (h / 800);
+        if (b.y < -40) continue;
+        alive += 1;
+        const x = b.x + Math.sin((t - t0) / 520 + b.ph) * b.sway;
+        g.globalAlpha = Math.min(1, Math.max(0, b.y / (h * 0.3)));
+        g.setTransform(dpr * b.s, 0, 0, dpr * b.s, x * dpr, b.y * dpr);
+        g.rotate(b.r + Math.sin((t - t0) / 400 + b.ph) * 0.18);
+        g.translate(-12, -12);
+        g.fillStyle = b.c;
+        g.fill(heart);
+      }
+      if (alive && t - t0 < 7000) requestAnimationFrame(frame); else c.remove();
+    };
+    requestAnimationFrame(frame);
+    return c;
+  }
+
+  const missYou = (() => {
+    const LS = 'ourstory.miss.v1';
+    let box = null;
+    let recent = [];
+    let current = null;
+
+    // How many times today; it starts again from one every day.
+    function times() {
+      const today = fmtDate(new Date());
+      let s = null;
+      try { s = JSON.parse(localStorage.getItem(LS)); } catch (e) { /* nothing yet */ }
+      const n = s && s.d === today ? s.n + 1 : 1;
+      try { localStorage.setItem(LS, JSON.stringify({ d: today, n })); } catch (e) { /* private mode */ }
+      return n;
+    }
+
+    function build() {
+      document.body.insertAdjacentHTML('beforeend', `<div class="memory" id="memory" hidden>
+        <div class="mem-card" role="dialog" aria-modal="true" aria-labelledby="mem-k">
+          <p class="kicker" id="mem-k"></p>
+          <button class="mem-ph" id="mem-ph" type="button" aria-label="放大看"><img alt=""></button>
+          <p class="mem-when"><b id="mem-d"></b><span id="mem-s"></span></p>
+          <div class="mem-act"><button type="button" id="mem-again">${HEART}<span>再翻一张</span></button><button type="button" id="mem-close">收起</button></div>
+        </div>
+      </div>`);
+      box = $('#memory');
+      box.addEventListener('click', (e) => { if (e.target === box) close(); });
+      $('#mem-close').addEventListener('click', close);
+      $('#mem-again').addEventListener('click', () => { const r = $('#mem-again').getBoundingClientRect(); sprinkle(r.left + 24, r.top + r.height / 2, 3); show(); });
+      $('#mem-ph').addEventListener('click', () => {
+        if (!current) return;
+        close();
+        openLightbox([current.id], 0);
+      });
+      addEventListener('keydown', (e) => { if (e.key === 'Escape' && !box.hidden) close(); });
+    }
+
+    function pickOne() {
+      const pool = data.media.filter((m) => m.type === 'photo' && m.dq !== 'unknown');
+      const fresh = pool.filter((m) => !recent.includes(m.id));
+      const m = (fresh.length ? fresh : pool)[Math.floor(Math.random() * (fresh.length || pool.length))];
+      recent = [m.id, ...recent].slice(0, 30);
+      return m;
+    }
+
+    function show() {
+      const m = pickOne();
+      current = m;
+      const ph = $('#mem-ph');
+      ph.style.setProperty('--ar', (m.w / m.h).toFixed(4));
+      ph.style.setProperty('--c', m.c);
+      const img = ph.querySelector('img');
+      img.classList.remove('ready');
+      img.removeAttribute('src');
+      blobURL(m.id, 'image/webp', true).then((u) => {
+        if (current !== m) return;
+        img.onload = () => img.classList.add('ready');
+        img.src = u;
+        return blobURL(m.l, 'image/webp', true);
+      }).then((u) => { if (u && current === m) img.src = u; }).catch(() => {});
+      const pl = placeOf(m);
+      const ago = Math.round((todayDate() - parseDay(m.date)) / DAY);
+      $('#mem-d').textContent = dateLabel(m);
+      const when = m.dq === 'approx' ? `大约 ${Math.max(1, Math.round(ago / 30.4))} 个月前` : ago > 0 ? `${nf.format(ago)} 天前` : '就是今天';
+      $('#mem-s').textContent = [pl && pl.name, when].filter(Boolean).join(' · ');
+      const card = box.querySelector('.mem-card');
+      card.classList.remove('flip');
+      void card.offsetWidth;
+      card.classList.add('flip');
+    }
+
+    function open() {
+      if (!data) return;
+      if (!box) build();
+      const n = times();
+      const b = $('#miss-btn').getBoundingClientRect();
+      sprinkle(b.left + b.width / 2, b.top, 5);
+      const rain = heartRain();
+      $('#mem-k').textContent = n === 1 ? '今天第一次想你' : `今天第 ${n} 次想你`;
+      show();
+      setTimeout(() => {
+        box.hidden = false;
+        rain?.classList.add('behind'); // the hearts go on rising behind the photo, softly blurred
+        document.body.style.overflow = 'hidden';
+        requestAnimationFrame(() => box.classList.add('on'));
+        $('#mem-again').focus({ preventScroll: true });
+      }, reduceMotion ? 0 : 750);
+    }
+
+    function close() {
+      box.classList.remove('on');
+      document.body.style.overflow = '';
+      setTimeout(() => { if (!box.classList.contains('on')) box.hidden = true; }, 400);
+    }
+
+    return { open };
+  })();
 
   /* Confetti from both sides of the screen: birthdays and opening the capsule. */
   function confetti(n = 160) {

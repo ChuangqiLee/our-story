@@ -725,6 +725,7 @@ body.is-locked .nav { opacity: 0; pointer-events: none; }
 /* effects */
 .confetti, #weather { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .confetti { z-index: 90; }
+.confetti.behind { z-index: 83; }
 #weather { z-index: 3; }
 .big-heart { position: fixed; z-index: 70; width: 92px; height: 92px; margin: -46px 0 0 -46px; pointer-events: none; color: #fff; filter: drop-shadow(0 6px 24px rgba(255, 90, 130, .85)); animation: pop .95s var(--ease) forwards; }
 .big-heart svg { width: 100%; height: 100%; }
@@ -788,6 +789,87 @@ body.is-locked .nav { opacity: 0; pointer-events: none; }
   .next-arrow { width: 46px; height: 46px; margin-top: -23px; }
 }
 
+/* us: the moon the night we got together, and tonight's */
+.moons { display: grid; grid-template-columns: 1fr minmax(180px, .8fr) 1fr; align-items: center; gap: clamp(16px, 3vw, 40px); }
+.moon-fig { margin: 0; display: grid; justify-items: center; gap: 22px; text-align: center; }
+.moon-svg { width: min(100%, 250px); height: auto; overflow: visible; filter: drop-shadow(0 0 30px rgba(255, 226, 196, .14)); }
+.moons .moon-fig:last-child .moon-svg { animation: moonglow 6s ease-in-out infinite; }
+@keyframes moonglow { 50% { filter: drop-shadow(0 0 46px rgba(255, 226, 196, .3)); } }
+.moon-fig figcaption { display: grid; gap: 8px; }
+.moon-fig small { font: 500 11px var(--mono); letter-spacing: .16em; color: var(--ink-3); }
+.moon-fig b { font: 400 clamp(24px, 2.6vw, 32px)/1.2 var(--zh-serif); }
+.moon-fig span { font: 14px var(--zh-serif); color: var(--ink-2); }
+.moon-mid { display: grid; justify-items: center; gap: 16px; }
+.moon-mid p { margin: 0; display: flex; align-items: baseline; gap: 8px; }
+.moon-mid p b { font: 400 clamp(56px, 6vw, 84px)/.9 var(--display); background: linear-gradient(100deg, #fff6ea, #ffd9b8 60%, var(--peach)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.moon-mid p span { font: 16px var(--zh-serif); color: var(--ink-2); }
+.beads { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; max-width: 220px; }
+.beads i { width: 9px; height: 9px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fffaf2, #e9d3bd); box-shadow: 0 0 8px rgba(255, 226, 196, .35); opacity: 0; transform: scale(.3); transition: opacity .5s, transform .6s var(--ease); transition-delay: calc(.4s + var(--i) * 28ms); }
+.beads i.yet { background: none; box-shadow: none; border: 1px dashed rgba(255, 226, 196, .7); animation: blink 1.6s ease-in-out infinite; }
+@keyframes blink { 50% { border-color: rgba(255, 226, 196, .2); } }
+.moons.in .beads i { opacity: 1; transform: none; }
+.moon-line { margin: clamp(36px, 6vh, 56px) auto 0; max-width: 34em; text-align: center; font: 18px/1.9 var(--zh-serif); color: var(--ink-2); }
+
+/* chapters: one photo a year */
+.years { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: clamp(12px, 2vw, 24px); }
+.yr { margin: 0; }
+.yr-ph { position: relative; }
+.yr-ph .ph, .yr-blank { display: block; aspect-ratio: 4 / 3; height: auto; border-radius: 16px; }
+.yr-blank { display: grid; }
+.yr-ph .ph img { object-position: 50% 30%; }
+.yr-blank { display: grid; place-content: center; justify-items: center; gap: 12px; border: 1px dashed rgba(255, 125, 156, .35); background: radial-gradient(80% 80% at 50% 40%, rgba(255, 125, 156, .16), transparent 70%), rgba(255, 238, 245, .02); color: var(--rose); }
+.yr-blank svg { width: 38px; filter: drop-shadow(0 0 14px rgba(255, 125, 156, .6)); }
+.yr-blank span { font: 14px var(--zh-serif); color: var(--ink-2); }
+.yr figcaption { position: relative; display: grid; gap: 4px; margin-top: -26px; padding: 0 6px; pointer-events: none; }
+.yr figcaption b { font: italic 400 clamp(52px, 5.4vw, 76px)/.9 var(--display); background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 4px 14px rgba(11, 9, 16, .9)); }
+.yr figcaption small { font: 12px/1.5 var(--mono); letter-spacing: .1em; color: var(--ink-3); }
+.yr figcaption span { font: 14px/1.5 var(--zh-serif); color: var(--ink-2); }
+
+/* places: how far we have come, and walking it again */
+.atlas-km { position: absolute; left: 18px; bottom: 16px; display: grid; justify-items: start; gap: 4px; }
+.atlas-km small { font: 500 11px var(--mono); letter-spacing: .2em; color: var(--ink-3); }
+.atlas-km p { margin: 0; display: flex; align-items: baseline; gap: 6px; }
+.atlas-km b { font: 400 clamp(38px, 4.4vw, 56px)/1 var(--display); font-variant-numeric: tabular-nums; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.atlas-km p span { font: 15px var(--zh-serif); color: var(--ink-2); }
+.km-play { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 15px 8px 12px; border-radius: 999px; border: 1px solid rgba(255, 125, 156, .45); background: rgba(11, 9, 16, .6); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); color: var(--ink); font: 13.5px var(--zh-serif); cursor: pointer; transition: background .25s, border-color .25s; }
+.km-play:hover { background: rgba(255, 125, 156, .16); }
+.km-play svg { width: 12px; height: 12px; color: var(--rose); }
+.km-play em { font-style: normal; }
+.km-play .ic-pause, .km-play[aria-pressed="true"] svg:first-child { display: none; }
+.km-play[aria-pressed="true"] .ic-pause { display: block; }
+.km-play[aria-pressed="false"] { animation: nudge 2.6s ease-in-out infinite; }
+@keyframes nudge { 50% { box-shadow: 0 0 0 6px rgba(255, 125, 156, .1); } }
+
+/* missing you */
+.miss-btn {
+  position: fixed; left: var(--gutter); bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px)); z-index: 30; display: inline-flex; align-items: center; gap: 8px; height: 48px; padding: 0 18px 0 14px;
+  border: 1px solid rgba(255, 125, 156, .4); border-radius: 999px; background: rgba(21, 16, 28, .74); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  color: var(--ink); font: 15px var(--zh-serif); letter-spacing: .1em; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .7s var(--ease), transform .25s var(--ease); -webkit-tap-highlight-color: transparent;
+}
+body:not(.is-locked) .miss-btn { opacity: 1; pointer-events: auto; }
+.miss-btn svg { width: 20px; height: 20px; color: var(--rose); filter: drop-shadow(0 0 8px rgba(255, 125, 156, .7)); animation: beat 1.8s ease-in-out infinite; }
+@keyframes beat { 0%, 40%, 100% { transform: scale(1); } 15% { transform: scale(1.22); } 28% { transform: scale(1.08); } }
+.miss-btn:hover { transform: scale(1.05); }
+.miss-btn:active { transform: scale(.94); }
+.memory { position: fixed; inset: 0; z-index: 84; display: grid; place-items: center; padding: max(20px, env(safe-area-inset-top)) 18px max(20px, env(safe-area-inset-bottom)); background: rgba(8, 6, 11, .7); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); opacity: 0; transition: opacity .4s var(--ease); }
+.memory[hidden] { display: none; }
+.memory.on { opacity: 1; }
+.mem-card { display: grid; justify-items: center; gap: 14px; padding: 22px 22px 18px; border-radius: 10px; background: #fbf4f1; color: #2b1c23; box-shadow: 0 40px 90px -30px rgba(0, 0, 0, .9), 0 0 0 1px rgba(255, 255, 255, .5) inset; transform: rotate(-1.5deg); }
+.mem-card.flip { animation: deal-in .7s var(--ease); }
+@keyframes deal-in { from { opacity: 0; transform: translateY(40px) rotate(6deg) scale(.92); } }
+.mem-card .kicker { margin: 0; color: #b06b80; }
+.mem-ph { position: relative; display: block; padding: 0; border: 0; border-radius: 3px; overflow: hidden; cursor: zoom-in; background: var(--c, #e7d6dc); aspect-ratio: var(--ar, 1); height: min(54vh, calc(min(78vw, 460px) / var(--ar, 1))); }
+.mem-ph img { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .5s; }
+.mem-ph img.ready { opacity: 1; }
+.mem-when { margin: 0; display: grid; justify-items: center; gap: 4px; }
+.mem-when b { font: 500 13px var(--mono); letter-spacing: .14em; color: #b06b80; }
+.mem-when span { font: 17px var(--zh-serif); color: #4a3640; }
+.mem-act { display: flex; gap: 10px; }
+.mem-act button { display: inline-flex; align-items: center; gap: 6px; padding: 10px 18px; border-radius: 999px; border: 1px solid rgba(176, 107, 128, .35); background: transparent; color: #6b4655; font: 15px var(--zh-serif); cursor: pointer; transition: background .2s; }
+.mem-act button:first-child { background: linear-gradient(100deg, #ff9db5, #ff7d9c); border-color: transparent; color: #fff; }
+.mem-act button:hover { filter: brightness(1.05); }
+.mem-act svg { width: 15px; height: 15px; }
+
 /* ---------- small screens ---------- */
 @media (max-width: 760px) {
   .scroll-cue { display: none; } /* phones scroll anyway, and it ran into the clock on short screens */
@@ -823,6 +905,32 @@ body.is-locked .nav { opacity: 0; pointer-events: none; }
   .hms { gap: 12px; font-size: 13px; }
   .letter-body { --lh: 36px; }
   .letter-body p { font-size: 17px; }
+}
+
+@media (max-width: 760px) {
+  .moons { grid-template-columns: 1fr 1fr; gap: 26px 14px; }
+  .moon-mid { grid-column: 1 / -1; grid-row: 2; }
+  .moon-svg { width: min(100%, 150px); }
+  .moon-fig { gap: 14px; }
+  .moon-fig b { font-size: 21px; }
+  .moon-fig span { font-size: 13px; }
+  .beads { max-width: 300px; gap: 6px; }
+  .moon-line { font-size: 16px; }
+  .years { grid-template-columns: 1fr 1fr; gap: 26px 10px; }
+  .yr-ph .ph, .yr-blank { border-radius: 12px; }
+  .yr figcaption { margin-top: -18px; }
+  .yr figcaption b { font-size: 44px; }
+  .yr figcaption small { font-size: 11px; letter-spacing: .04em; }
+  .yr figcaption span { font-size: 13px; }
+  .atlas-km { left: 12px; bottom: 12px; }
+  .atlas-km b { font-size: 34px; }
+  .km-play { padding: 7px 12px 7px 10px; font-size: 13px; }
+  .atlas-now { right: 12px; bottom: 12px; }
+  .atlas-now b { font-size: 26px; }
+  .miss-btn { left: auto; right: 12px; bottom: calc(max(10px, env(safe-area-inset-bottom)) + 84px); width: 48px; padding: 0; justify-content: center; }
+  .miss-btn span { display: none; }
+  .mem-card { padding: 16px 16px 14px; gap: 12px; }
+  .mem-ph { height: min(52vh, calc(80vw / var(--ar, 1))); }
 }
 
 @media (prefers-reduced-motion: reduce) {
