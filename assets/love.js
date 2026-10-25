@@ -11,6 +11,23 @@
   const PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 4l14 8-14 8z"/></svg>';
   const PAUSE = '<svg class="ic-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1.2"/><rect x="14" y="4.5" width="4" height="15" rx="1.2"/></svg>';
   const ZH_MONTH = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'];
+  const ic = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  const ICON = {
+    us: ic('<path d="M12 20s-7-4.2-8.9-9C1.9 7.7 3.9 4.5 7.1 4.5c2 0 3.6 1.1 4.9 2.8 1.3-1.7 2.9-2.8 4.9-2.8 3.2 0 5.2 3.2 4 6.5C19 15.8 12 20 12 20z"/>'),
+    time: ic('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+    map: ic('<path d="M12 21s-6.5-6.2-6.5-11.2a6.5 6.5 0 0 1 13 0C18.5 14.8 12 21 12 21z"/><circle cx="12" cy="9.8" r="2.3"/>'),
+    moments: ic('<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><circle cx="9" cy="10.5" r="1.6"/><path d="M20.5 15.5l-4.5-4.5-7.5 7.5"/>'),
+    days: ic('<rect x="4" y="5.5" width="16" height="14" rx="2.5"/><path d="M8 3.5v4M16 3.5v4M4 10h16"/><path d="M12 17.4s-2.7-1.6-2.7-3.3c0-.9.7-1.6 1.5-1.6.5 0 .9.3 1.2.7.3-.4.7-.7 1.2-.7.8 0 1.5.7 1.5 1.6 0 1.7-2.7 3.3-2.7 3.3z" fill="currentColor" stroke="none"/>'),
+    someday: ic('<path d="M12 3.5l2.4 5.3 5.8.6-4.4 3.9 1.3 5.7L12 16l-5.1 3 1.3-5.7-4.4-3.9 5.8-.6z"/>'),
+  };
+  const HEART_PATH = 'M12 21.2s-7.8-4.6-9.9-10C.7 7.6 2.9 3.6 6.8 3.6c2.2 0 3.9 1.2 5.2 3 1.3-1.8 3-3 5.2-3 3.9 0 6.1 4 4.7 7.6-2.1 5.4-9.9 10-9.9 10z';
+  // ?today=2027-01-29 previews the site as it will look on another day: a birthday, "on this day".
+  const PREVIEW_DAY = /^(\d{4})-(\d{2})-(\d{2})$/.exec(new URLSearchParams(location.search).get('today') || '');
+  function todayDate() {
+    const d = PREVIEW_DAY ? new Date(Number(PREVIEW_DAY[1]), Number(PREVIEW_DAY[2]) - 1, Number(PREVIEW_DAY[3])) : new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
 
   const lock = $('#lock');
   const form = $('#lock-form');
@@ -21,6 +38,7 @@
   let meta = null;
   let key = null;
   let data = null;
+  let baseTitle = document.title;
   const byId = new Map();
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -109,7 +127,7 @@
       err.textContent = '内容还没准备好，稍后再来。';
       return;
     }
-    if (meta.title) { $('#lock-title').innerHTML = `<em>${esc(meta.title)}</em>`; document.title = meta.title; }
+    if (meta.title) { $('#lock-title').innerHTML = `<em>${esc(meta.title)}</em>`; document.title = meta.title; baseTitle = meta.title; }
     if (meta.subtitle) $('#lock-sub').textContent = meta.subtitle;
     if (meta.hint) { const h = $('#hint'); h.textContent = `提示：${meta.hint}`; h.hidden = false; }
 
@@ -180,9 +198,16 @@
     story.hidden = false;
     document.body.classList.remove('is-locked');
     $('#brand')?.classList.add('on');
+    $('#nav')?.classList.add('on');
     document.documentElement.classList.remove('has-key');
     startReveal();
     hero.start();
+    const days = specialDays(data.since ? parseDay(data.since) : null, data.days || []);
+    const bd = birthdayToday(days);
+    if (bd) setTimeout(() => confetti(220), 500);
+    const month = todayDate().getMonth();
+    weather(bd ? 'confetti' : days.some((d) => d.left === 0 && /周年/.test(d.label)) ? 'hearts'
+      : [2, 3, 4].includes(month) ? 'petals' : [5, 6, 7].includes(month) ? 'fireflies' : [8, 9, 10].includes(month) ? 'leaves' : 'snow');
     setTimeout(() => lock.remove(), 1100);
   }
 
@@ -410,25 +435,121 @@
     return { unlock, play, pause, toggle, auto, duck, ui, has };
   })();
 
-  /* ---------- render ---------- */
+  /* ---------- render: one page per part of the story ---------- */
   const sets = {};
+  let pages = [];
 
   function render() {
     const media = data.media;
-    const [a, b] = data.names || [];
     const since = data.since ? parseDay(data.since) : null;
     const months = groupByMonth(media);
+    const days = specialDays(since, data.days || []);
+    const groups = placeGroups();
+    const firsts = (data.firsts || []).filter((f) => f.title);
+    const wishes = (data.wishes || []).filter((w) => w.text);
     sets.all = media.map((m) => m.id);
+    const favs = media.filter((m) => m.fav && m.type === 'photo');
+    const fav = (k) => (favs.length ? favs[k % favs.length] : media[k % media.length]);
+    pages = [
+      { id: '', zh: '我们', en: 'Us', icon: ICON.us, build: (p) => homeHTML(p, { media, since, months, days }) },
+      {
+        id: 'time', zh: '时光', en: 'Chapters', icon: ICON.time, has: months.length || firsts.length,
+        build: (p) => timeHTML(p, { media, since, months }),
+        blurb: `${months.length} 个月的照片${firsts.length ? ` · ${firsts.length} 个第一次` : ''}`,
+        cover: photoFor(firsts[1]) || fav(0),
+      },
+      {
+        id: 'map', zh: '足迹', en: 'Our map', icon: ICON.map, has: groups.length,
+        build: (p) => atlasHTML(p, groups),
+        blurb: `${groups.length} 个一起去过的地方`,
+        cover: groups.length ? tripCover(groups[groups.length - 1]) : null,
+      },
+      {
+        id: 'moments', zh: '瞬间', en: 'Moments', icon: ICON.moments, has: media.length,
+        build: (p) => momentsHTML(p, media),
+        blurb: `${nf.format(media.length)} 个瞬间`,
+        cover: fav(Math.floor(Date.now() / DAY)),
+      },
+      {
+        id: 'days', zh: '纪念日', en: 'Days that matter', icon: ICON.days, has: days.length,
+        build: (p) => daysHTML(p, days),
+        blurb: days[0] ? `${days[0].left === 0 ? '就是今天' : `${days[0].left} 天后`} · ${days[0].label}` : '',
+        cover: fav(3),
+      },
+      {
+        id: 'someday', zh: '以后', en: 'Someday', icon: ICON.someday,
+        build: (p) => somedayHTML(p, wishes),
+        blurb: `${wishes.length ? `${wishes.length} 个心愿` : '心愿清单'} · 时光胶囊`,
+        cover: media[media.length - 1],
+      },
+    ].filter((p) => p.has === undefined || p.has);
+    pages.forEach((p, i) => { p.no = i; });
 
-    let html = '';
+    story.innerHTML = pages.map((p, i) => `<div class="page" data-page="${p.id}" hidden>
+      ${p.build(p)}${i ? nextHTML(i) : ''}${footHTML(since)}
+    </div>`).join('');
+    chrome();
 
-    /* hero */
-    html += `<section class="hero" id="top">
+    if (since) tick(since);
+    hero.prepare();
+    atlas.setup();
+    if (media.length) setupWall();
+    setupCapsule();
+    story.querySelectorAll('.relock').forEach((b) => b.addEventListener('click', () => { store.clear(); location.reload(); }));
+    $('.scroll-cue')?.addEventListener('click', () => $('#top').nextElementSibling?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' }));
+    route();
+  }
+
+  function photoOn(date) {
+    const day = date.slice(0, 10);
+    const same = data.media.filter((m) => m.type === 'photo' && m.dq !== 'unknown' && m.date.slice(0, 10) === day);
+    return same.find((m) => m.fav) || same[0] || null;
+  }
+  const photoFor = (item) => (item ? (item.photo && byId.get(item.photo)) || (item.date && photoOn(item.date)) || null : null);
+  const tripCover = (g) => g.list.find((m) => m.fav && m.type === 'photo') || g.list.find((m) => m.type === 'photo') || g.list[0];
+  const birthdayToday = (days) => days.find((d) => d.left === 0 && /生日/.test(d.label)) || null;
+
+  function pageHead(p, lead) {
+    return `<header class="page-head"><div class="wrap">
+      <p class="page-no"><i>${pad2(p.no + 1)}</i><span>${esc(p.en)}</span></p>
+      <h1 class="page-title">${[...p.zh].map((c, i) => `<span style="--i:${i}">${esc(c)}</span>`).join('')}</h1>
+      ${lead ? `<p class="lead">${lead}</p>` : ''}
+    </div></header>`;
+  }
+
+  function nextHTML(i) {
+    const last = i === pages.length - 1;
+    const n = last ? pages[0] : pages[i + 1];
+    const m = n.id ? n.cover : (hero.first() || { list: [] }).list[0];
+    return `<section class="next-sec"><div class="wrap"><a class="next reveal" href="#/${n.id}" style="--c:${m ? m.c : '#221a24'}">
+      ${m ? `<span class="lazy next-bg" data-id="${m.id}"><img alt=""></span>` : ''}
+      <span class="kicker">${last ? '回到开头' : '下一页'} · ${pad2(n.no + 1)}</span>
+      <b>${n.zh}</b><small>${esc(n.en)}</small>
+      <span class="next-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+    </a></div></section>`;
+  }
+
+  function footHTML(since) {
+    const together = since ? Math.floor((Date.now() - since) / DAY) : 0;
+    return `<footer class="foot">
+      <h3 class="grad">To be continued</h3>
+      <p>${since ? `今天是我们在一起的第 ${nf.format(together + 1)} 天，故事还在继续。` : '故事还在继续。'}</p>
+      <div class="${hasSeal() ? 'foot-seal' : 'heart'}">${sealSVG('is-mini') || HEART}</div>
+      <button class="relock" type="button">在这台设备上锁上</button>
+    </footer>`;
+  }
+
+  /* 01 us: the cover, our seal and song, today, and the doors to every other page */
+  function homeHTML(p, { media, since, months, days }) {
+    const [a, b] = data.names || [];
+    const bd = birthdayToday(days);
+    let html = `<section class="hero" id="top">
       <div class="hero-media" id="hero-media" aria-hidden="true"></div>
       <div class="hero-meta" id="hero-meta" aria-hidden="true"></div>
       <div class="hero-inner">
-        ${since ? `<p class="kicker reveal">Together since ${fmtDate(data.since)}</p>` : ''}
+        ${bd ? '<p class="kicker bday-k reveal">Happy birthday</p>' : since ? `<p class="kicker reveal">Together since ${fmtDate(data.since)}</p>` : ''}
         <h1 class="names reveal" style="transition-delay:.12s">${a || b ? `<span>${esc(a)}</span><span class="amp">&amp;</span><span>${esc(b)}</span>` : '<span>Us</span>'}</h1>
+        ${bd ? `<p class="bday-line reveal" style="transition-delay:.18s">今天是${esc(bd.label)}${bd.age ? `，${bd.age} 岁` : ''}。生日快乐！</p>` : ''}
         ${data.tagline ? `<p class="tagline reveal">${esc(data.tagline)}</p>` : ''}
         ${since ? `<div class="counter reveal" style="transition-delay:.24s" aria-live="off">
           <span class="lbl">我们已经在一起</span>
@@ -436,33 +557,100 @@
           <div class="hms"><span><b id="c-h">00</b>时</span><span><b id="c-m">00</b>分</span><span><b id="c-s">00</b>秒</span></div>
         </div>` : ''}
       </div>
-      <a class="scroll-cue" href="#stats">SCROLL<i></i></a>
+      <button class="scroll-cue" type="button">SCROLL<i></i></button>
     </section>`;
+    html += sealHTML();
+    html += todayHTML(days);
+    html += statsHTML(media, since, months);
+    html += doorsHTML();
+    return html;
+  }
 
-    /* stats */
+  function statsHTML(media, since, months) {
     const together = since ? Math.floor((Date.now() - since) / DAY) : null;
     const next = since ? nextAnniversary(since) : null;
     const places = data.places || [];
-    html += `<section class="sec" id="stats"><div class="wrap"><div class="stats reveal">
+    return `<section class="sec" id="stats"><div class="wrap"><div class="stats reveal">
       ${since ? `<div class="stat"><b>${nf.format(together)}</b><span>天在一起</span><small>DAYS</small></div>` : ''}
       <div class="stat"><b>${nf.format(media.length)}</b><span>张照片和视频</span><small>MOMENTS</small></div>
       ${places.length ? `<div class="stat"><b>${places.length}</b><span>个一起去过的地方</span><small>PLACES</small></div>` : `<div class="stat"><b>${months.length}</b><span>个留下回忆的月份</span><small>MONTHS</small></div>`}
       ${next ? `<div class="stat"><b>${next.days}</b><span>${next.days === 0 ? `今天就是 ${next.n} 周年` : `天后是 ${next.n} 周年`}</span><small>ANNIVERSARY</small></div>` : ''}
     </div></div></section>`;
+  }
 
-    /* the seal and our song */
-    html += sealHTML();
+  // Photos from this day in earlier years; failing that, from these few days, or this month.
+  function onThisDay() {
+    const t = todayDate();
+    const y = t.getFullYear();
+    const md = `${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`;
+    const past = data.media.filter((m) => m.dq !== 'unknown' && Number(m.date.slice(0, 4)) < y);
+    const exact = past.filter((m) => m.dq !== 'approx' && m.date.slice(5, 10) === md);
+    if (exact.length) return { title: '那年今天', list: exact };
+    const near = past.filter((m) => {
+      if (m.dq === 'approx') return false;
+      const d = parseDay(m.date);
+      return Math.abs(new Date(y, d.getMonth(), d.getDate()) - t) <= 3 * DAY;
+    });
+    if (near.length) return { title: '那年这几天', list: near };
+    const month = past.filter((m) => m.date.slice(5, 7) === md.slice(0, 2));
+    if (month.length) return { title: '往年的这个月', list: month };
+    return null;
+  }
 
-    /* travel map */
-    html += atlasHTML();
+  function todayHTML(days) {
+    const t = todayDate();
+    const otd = onThisDay();
+    let left = '';
+    if (otd) {
+      sets.otd = otd.list.map((m) => m.id);
+      const years = [...new Set(otd.list.map((m) => m.date.slice(0, 4)))].sort().reverse();
+      left = `<div class="otd reveal">
+        <p class="kicker">On this day · ${pad2(t.getMonth() + 1)}.${pad2(t.getDate())}</p>
+        <h2>${otd.title}</h2>
+        ${years.map((y) => {
+          const list = otd.list.filter((m) => m.date.startsWith(y));
+          const when = [...new Set(list.map((m) => (m.dq === 'approx' ? `${Number(m.date.slice(5, 7))} 月` : m.date.slice(5, 10).replace('-', '.'))))];
+          return `<div class="otd-year">
+            <div class="otd-y"><b>${y}</b><span>${t.getFullYear() - Number(y)} 年前${otd.title === '那年今天' ? '' : ` · ${when.slice(0, 3).join('、')}`}</span></div>
+            <div class="otd-strip">${pick(list, 4).map((m) => photoButton(m, { set: 'otd' })).join('')}</div>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+    const next = days[0];
+    const right = next ? `<a class="soon reveal${/生日/.test(next.label) ? ' bday' : ''}" href="#/days">
+        <p class="kicker">Next</p>
+        <div class="soon-n">${next.left === 0 ? '<b>今天</b>' : `<b>${nf.format(next.left)}</b><span>天后</span>`}</div>
+        <p class="soon-what">${esc(next.label)}${next.age ? ` · ${next.age} 岁` : ''}</p>
+        <small>${fmtDate(next.when)}</small>
+      </a>` : '';
+    if (!left && !right) return '';
+    return `<section class="sec today-sec"><div class="wrap today${left && right ? '' : ' one'}">${left}${right}</div></section>`;
+  }
 
-    /* timeline */
+  function doorsHTML() {
+    const doors = pages.slice(1);
+    if (!doors.length) return '';
+    return `<section class="sec doors-sec"><div class="wrap">
+      <header class="sec-head reveal"><p class="kicker">Chapters of us</p><h2>翻开我们的故事</h2></header>
+      <div class="doors">${doors.map((p, k) => `<a class="door reveal" href="#/${p.id}" style="--c:${p.cover ? p.cover.c : '#221a24'};transition-delay:${(k % 3) * 0.07}s">
+        ${p.cover ? `<span class="lazy door-bg" data-id="${p.cover.id}"><img alt=""></span>` : ''}
+        <span class="door-no">${pad2(p.no + 1)}</span><span class="door-ic" aria-hidden="true">${p.icon}</span>
+        <b>${p.zh}</b><small>${esc(p.en)}</small>${p.blurb ? `<em>${esc(p.blurb)}</em>` : ''}
+      </a>`).join('')}</div>
+    </div></section>`;
+  }
+
+  /* 02 chapters: our firsts, then the timeline month by month */
+  function timeHTML(p, { media, since, months }) {
+    let html = pageHead(p, since ? `从 ${fmtDate(data.since)} 开始，一个月一个月攒下来的。` : '');
+    html += firstsHTML();
     const items = timelineItems(months, withAnniversaries(data.milestones || [], since, media), data.chapters || {});
     if (items.length) {
       let lastYear = null;
       let flip = false;
       html += `<section class="sec" id="timeline"><div class="wrap">
-        <header class="sec-head reveal"><p class="kicker">Chapters</p><h2>我们的时间线</h2></header>
+        <header class="sec-head reveal"><p class="kicker">Timeline</p><h2>时间线</h2></header>
         <div class="tl"><i class="tl-fill"></i>`;
       for (const it of items) {
         const y = it.date.slice(0, 4);
@@ -477,10 +665,8 @@
       }
       html += '</div></div></section>';
     }
-
-    /* letter */
     if (data.letter && data.letter.body) {
-      const paras = data.letter.body.trim().split(/\n\s*\n/).map((p) => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
+      const paras = data.letter.body.trim().split(/\n\s*\n/).map((x) => `<p>${esc(x).replace(/\n/g, '<br>')}</p>`).join('');
       html += `<section class="sec letter" id="letter"><div class="paper">
         <svg class="seal" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21.2s-7.8-4.6-9.9-10C.7 7.6 2.9 3.6 6.8 3.6c2.2 0 3.9 1.2 5.2 3 1.3-1.8 3-3 5.2-3 3.9 0 6.1 4 4.7 7.6-2.1 5.4-9.9 10-9.9 10z"/></svg>
         <p class="kicker">To you</p>
@@ -489,47 +675,159 @@
         ${data.letter.sign ? `<p class="sign">${esc(data.letter.sign)}</p>` : ''}
       </div></section>`;
     }
+    return html;
+  }
 
-    /* special days */
-    const days = specialDays(since, data.days || []);
-    if (days.length) {
-      html += `<section class="sec" id="days"><div class="wrap">
-        <header class="sec-head reveal"><p class="kicker">Days that matter</p><h2>重要的日子</h2></header>
-        <div class="days">${days.map((d) => `<div class="day reveal${d.left === 0 ? ' today' : ''}">
-          <div class="label">${esc(d.label)}</div>
-          <b>${d.left === 0 ? '今天' : nf.format(d.left)}</b>
-          <small>${d.left === 0 ? 'TODAY ♥' : `DAYS · ${fmtDate(d.when)}`}</small>
-          ${d.age || d.note ? `<div class="day-note">${[d.age ? `${d.age} 岁` : '', esc(d.note)].filter(Boolean).join(' · ')}</div>` : ''}
-        </div>`).join('')}</div>
-      </div></section>`;
-    }
+  function firstsHTML() {
+    const list = (data.firsts || []).filter((f) => f.title);
+    if (!list.length) return '';
+    const tilt = [-2.4, 1.8, -1.2, 2.6, -1.8, 1.2];
+    sets.firsts = [];
+    return `<section class="sec firsts-sec"><div class="wrap">
+      <header class="sec-head reveal"><p class="kicker">Firsts</p><h2>第一次</h2><p class="lead">那些第一次，一张一张贴在这里。</p></header>
+      <div class="firsts">${list.map((f, i) => {
+        const m = photoFor(f);
+        if (m) sets.firsts.push(m.id);
+        const pl = m && placeOf(m);
+        return `<article class="first reveal" style="--r:${tilt[i % tilt.length]}deg;transition-delay:${(i % 3) * 0.08}s"><div class="polaroid">
+          <i class="tape" aria-hidden="true"></i>
+          ${m ? photoButton(m, { set: 'firsts' }) : `<div class="blank">${HEART}</div>`}
+          <span class="d">${f.date ? fmtDate(f.date) : ''}${pl ? ` · ${esc(pl.name)}` : ''}</span>
+          <h3>${esc(f.title)}</h3>
+          ${f.text ? `<p>${esc(f.text)}</p>` : ''}
+        </div></article>`;
+      }).join('')}</div>
+    </div></section>`;
+  }
 
-    /* gallery */
-    if (media.length) {
-      const years = [...new Set(media.map((m) => m.date.slice(0, 4)))];
-      html += `<section class="sec" id="gallery"><div class="wrap">
-        <header class="sec-head reveal"><p class="kicker">All of us</p><h2>所有的照片</h2><p class="lead">一共 ${nf.format(media.length)} 个瞬间。点开任意一张，可以左右翻看。</p></header>
+  /* 04 moments: every photo */
+  function momentsHTML(p, media) {
+    const years = [...new Set(media.map((m) => m.date.slice(0, 4)))];
+    return `${pageHead(p, `一共 ${nf.format(media.length)} 个瞬间。点开任意一张，可以左右翻看。`)}
+      <section class="sec" id="gallery"><div class="wrap">
         ${years.length > 1 ? `<div class="chips reveal" role="group" aria-label="按年份筛选"><button class="chip" aria-pressed="true" data-year="">全部</button>${years.map((y) => `<button class="chip" aria-pressed="false" data-year="${y}">${y}</button>`).join('')}</div>` : ''}
         <div class="wall" id="wall"></div>
         <div class="wall-more"><button class="btn" id="wall-more" hidden>再看更多</button></div>
       </div></section>`;
-    }
+  }
 
-    html += `<footer class="foot">
-      <h3 class="grad">To be continued</h3>
-      <p>${since ? `今天是我们在一起的第 ${nf.format(together + 1)} 天，故事还在继续。` : '故事还在继续。'}</p>
-      <div class="${hasSeal() ? 'foot-seal' : 'heart'}">${sealSVG('is-mini') || HEART}</div>
-      <button class="relock" type="button" id="relock">在这台设备上锁上</button>
-    </footer>`;
+  /* 05 days that matter */
+  function daysHTML(p, days) {
+    return `${pageHead(p, '生日、周年，还有每一个一百天，都替你们记着。')}
+      <section class="sec" id="days"><div class="wrap">
+        <div class="days">${days.map((d) => `<div class="day reveal${d.left === 0 ? ' today' : ''}${/生日/.test(d.label) ? ' bday' : ''}">
+          <div class="label">${esc(d.label)}</div>
+          <b>${d.left === 0 ? '今天' : nf.format(d.left)}</b>
+          <small>${d.left === 0 ? 'TODAY ♥' : `DAYS · ${fmtDate(d.when)}`}</small>
+          ${d.age || d.note ? `<div class="day-note">${[d.age ? `${d.age} 岁` : '', esc(d.note)].filter(Boolean).join(' · ')}</div>` : ''}
+          ${/生日/.test(d.label) && d.left > 0 ? '<div class="day-tease">那天打开网站，有个小惊喜</div>' : ''}
+        </div>`).join('')}</div>
+      </div></section>`;
+  }
 
-    story.innerHTML = html;
-    chrome();
+  /* 06 someday: what we want to do together, and a time capsule */
+  const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+  function somedayHTML(p, wishes) {
+    const done = wishes.filter((w) => w.done).length;
+    sets.wishes = [];
+    const items = wishes.map((w) => {
+      const m = w.photo && byId.get(w.photo);
+      if (m) sets.wishes.push(m.id);
+      return `<li class="wish reveal${w.done ? ' done' : ''}">
+        <span class="box">${CHECK}</span>
+        <span class="wt">${esc(w.text)}${typeof w.done === 'string' ? `<small>${fmtDate(w.done)} 实现了</small>` : ''}</span>
+        ${m ? `<span class="wph">${photoButton(m, { set: 'wishes' })}</span>` : ''}
+      </li>`;
+    }).join('');
+    return `${pageHead(p, '想一起做的事，和写给以后的我们。')}
+      <section class="sec wishes-sec"><div class="wrap narrow">
+        <header class="sec-head reveal"><p class="kicker">Wish list</p><h2>想一起做的事</h2>
+          ${wishes.length ? `<p class="lead">实现了 ${done} 个，还有 ${wishes.length - done} 个在路上。</p>` : ''}</header>
+        ${wishes.length ? `<ol class="wishes">${items}</ol>` : `<div class="wish-empty reveal"><span class="box">${CHECK}</span><p>第一条心愿，等你们一起写下。</p></div>`}
+      </div></section>
+      ${capsuleHTML()}`;
+  }
 
-    if (since) tick(since);
-    hero.prepare();
-    atlas.setup();
-    if (media.length) setupWall();
-    $('#relock').addEventListener('click', () => { store.clear(); location.reload(); });
+  function capsuleHTML() {
+    const cap = data.capsule;
+    const since = data.since ? parseDay(data.since) : null;
+    if (!cap) return '';
+    const openOn = cap.open ? parseDay(cap.open) : since ? new Date(since.getFullYear() + 5, since.getMonth(), since.getDate()) : null;
+    if (!openOn) return '';
+    // The real date, never a preview date: the capsule opens when it opens.
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const left = Math.round((openOn - now) / DAY);
+    const letters = (cap.letters || []).filter((l) => l.text);
+    const n = since ? openOn.getFullYear() - since.getFullYear() : 0;
+    const open = left <= 0 && letters.length > 0;
+    return `<section class="sec capsule-sec"><div class="wrap">
+      <header class="sec-head reveal"><p class="kicker">Time capsule</p><h2>时光胶囊</h2></header>
+      <div class="capsule reveal${open ? ' can-open' : ''}" id="capsule">
+        <button class="envelope" type="button"${open ? '' : ' disabled'} aria-label="${open ? '拆开胶囊' : '还没到打开的时候'}">
+          <span class="env-back"></span><span class="env-paper"></span><span class="env-front"></span><span class="env-flap"></span>
+          <span class="wax">${sealSVG('is-wax') || HEART}</span>
+        </button>
+        <div class="capsule-copy">
+          <div class="capsule-n">${left > 0 ? `<b>${nf.format(left)}</b><span>天后开启</span>` : '<b>今天</b><span>可以打开了</span>'}</div>
+          <p class="capsule-when">${fmtDate(openOn)}${n ? ` · 在一起 ${n} 周年那天` : ''}</p>
+          <p class="capsule-note">${letters.length ? `里面封着 ${letters.length} 封信，${left > 0 ? '到那天才能拆开。' : '点信封拆开。'}` : '胶囊还空着。你们可以各写一段话放进来，到那天才能打开。'}</p>
+        </div>
+      </div>
+      ${open ? `<div class="letters" id="letters" hidden>${letters.map((l) => `<article class="cap-letter">${l.from ? `<p class="kicker">${esc(l.from)}</p>` : ''}${l.text.trim().split(/\n\s*\n/).map((x) => `<p>${esc(x)}</p>`).join('')}</article>`).join('')}</div>` : ''}
+    </div></section>`;
+  }
+  function setupCapsule() {
+    const env = $('#capsule .envelope');
+    if (!env || env.disabled) return;
+    env.addEventListener('click', () => {
+      $('#capsule').classList.add('opened');
+      const l = $('#letters');
+      if (l && l.hidden) { setTimeout(() => { l.hidden = false; l.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 900); confetti(90); }
+    });
+  }
+
+  /* ---------- page routing: #/map, #/moments ... ---------- */
+  let current = null;
+  let tapAt = null;
+  addEventListener('pointerdown', (e) => { tapAt = [e.clientX, e.clientY]; }, { passive: true, capture: true });
+  function route() {
+    const m = /^#\/([\w-]*)/.exec(location.hash);
+    const page = pages.find((p) => p.id === (m ? m[1] : '')) || pages[0];
+    if (!page || page.id === current) return;
+    const prev = current == null ? null : story.querySelector(`.page[data-page="${current}"]`);
+    const next = story.querySelector(`.page[data-page="${page.id}"]`);
+    current = page.id;
+    document.querySelectorAll('#nav a').forEach((a) => {
+      if (a.dataset.page === page.id) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+    document.title = page.id ? `${page.zh} · ${baseTitle}` : baseTitle;
+    const show = () => {
+      if (prev) { prev.hidden = true; prev.classList.remove('leaving'); }
+      next.hidden = false;
+      scrollTo(0, 0);
+      if (!prev || reduceMotion) return;
+      next.classList.add('entering');
+      void next.offsetWidth;
+      next.classList.remove('entering');
+    };
+    if (prev && !reduceMotion && !story.hidden) {
+      prev.classList.add('leaving');
+      veil();
+      setTimeout(show, 360);
+    } else show();
+  }
+  addEventListener('hashchange', route);
+  // A soft rose light blooms from where you tapped while the page turns.
+  function veil() {
+    const v = $('#veil');
+    if (!v) return;
+    const [x, y] = tapAt || [innerWidth / 2, innerHeight / 2];
+    v.style.setProperty('--x', `${x}px`);
+    v.style.setProperty('--y', `${y}px`);
+    v.classList.remove('on');
+    void v.offsetWidth;
+    v.classList.add('on');
   }
 
   function sealHTML() {
@@ -578,9 +876,17 @@
   function chrome() {
     if (hasSeal() && !$('#brand')) {
       document.body.insertAdjacentHTML('afterbegin', SEAL_DEFS);
-      document.body.insertAdjacentHTML('beforeend', `<a class="brand" id="brand" href="#top" aria-label="${esc(data.seal.word || '回到开头')}">${sealSVG('is-corner')}</a>`);
+      document.body.insertAdjacentHTML('beforeend', `<a class="brand" id="brand" href="#/" aria-label="${esc(data.seal.word || '回到开头')}">${sealSVG('is-corner')}</a>`);
       const b = $('#brand');
       if (finePointer) b.addEventListener('mouseenter', () => playSeal(b.querySelector('svg'), 0.45));
+    }
+    if (pages.length > 1 && !$('#nav')) {
+      document.body.insertAdjacentHTML('beforeend', `<nav class="nav" id="nav" aria-label="页面" style="--n:${pages.length}">${pages.map((p) => `<a href="#/${p.id}" data-page="${p.id}">
+        <span class="ic" aria-hidden="true">${p.icon}</span><span class="nl">${p.zh}</span></a>`).join('')}</nav><div class="veil" id="veil" aria-hidden="true"></div>`);
+      // Tapping the page you are on takes you back to its top.
+      document.querySelectorAll('#nav a, #brand').forEach((a) => a.addEventListener('click', () => {
+        if ((a.dataset.page ?? '') === current) scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
+      }));
     }
     if (music.has() && !$('#music-btn')) {
       document.body.insertAdjacentHTML('beforeend', `<button class="music-btn" id="music-btn" type="button" aria-pressed="false" aria-label="播放音乐">
@@ -670,7 +976,7 @@
   }
 
   function nextAnniversary(since) {
-    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const today = todayDate();
     let n = today.getFullYear() - since.getFullYear();
     let when = new Date(since.getFullYear() + n, since.getMonth(), since.getDate());
     if (when < today) { n += 1; when = new Date(since.getFullYear() + n, since.getMonth(), since.getDate()); }
@@ -679,7 +985,7 @@
   }
 
   function specialDays(since, extra) {
-    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const today = todayDate();
     const out = [];
     if (since) {
       const a = nextAnniversary(since);
@@ -771,7 +1077,7 @@
       blobURL(m.id, 'image/webp').then((u) => { img.onload = () => img.classList.add('ready'); img.src = u; }).catch(() => {});
     }
   }, { rootMargin: '800px 0px' });
-  const observeImages = (root) => root.querySelectorAll('.ph:not([data-seen])').forEach((el) => { el.dataset.seen = '1'; imgObserver.observe(el); });
+  const observeImages = (root) => root.querySelectorAll('.ph:not([data-seen]), .lazy:not([data-seen])').forEach((el) => { el.dataset.seen = '1'; imgObserver.observe(el); });
 
   /* ---------- reveal + timeline progress ---------- */
   function startReveal() {
@@ -900,7 +1206,7 @@
     if (!since) return milestones;
     const out = milestones.slice();
     const have = new Set(out.map((ms) => ms.date));
-    const today = new Date();
+    const today = todayDate();
     for (let n = 1; ; n += 1) {
       const d = new Date(since.getFullYear() + n, since.getMonth(), since.getDate());
       if (d > today) break;
@@ -1111,6 +1417,61 @@
     cap.innerHTML = `${since ? `<span class="k">${fmtDate(data.since)} — ${fmtDate(new Date())}</span>` : ''}
       <b>${since ? `第 ${nf.format(days)} 天 · ` : ''}${nf.format(data.media.length)} 个瞬间</b>`;
 
+    // On a birthday the heart folds into a cake, and a tap blows the candles out.
+    async function cake(bd) {
+      const tiers = [[4, 6], [2, 8], [1, 9], [0, 10]]; // the columns of each tier, two rows each, top down
+      const base = rows - tiers.length * 2;
+      const spots = [];
+      tiers.forEach(([c0, c1], k) => {
+        for (let r = 0; r < 2; r += 1) for (let c = c0; c <= c1; c += 1) spots.push([c, base + k * 2 + r]);
+      });
+      const from = cells.map((c, i) => ({ c, t: tiles[i] })).sort((x, y) => x.c[1] - y.c[1] || x.c[0] - y.c[0]);
+      const moves = from.map(({ c, t }, i) => {
+        const to = spots[i];
+        const tr = to ? `translate(${(to[0] - c[0]) * step}px, ${(to[1] - c[1]) * step}px)` : `translate(0, ${-2 * step}px) scale(.3)`;
+        t.animate([{ transform: 'none', opacity: 1 }, { transform: tr, opacity: to ? 1 : 0 }],
+          { duration: 1000, delay: Math.random() * 240, easing: 'cubic-bezier(.65,0,.25,1)', fill: 'forwards' });
+        return { t, tr, to };
+      });
+      const sealWrap = el.querySelector('.intro-seal');
+      if (sealWrap) { sealWrap.style.transition = 'opacity .5s'; sealWrap.style.opacity = '0'; }
+      cap.classList.remove('on');
+      const ch = step * 1.3;
+      const candles = document.createElement('div');
+      candles.className = 'cake-candles';
+      candles.style.cssText = `left:${left + 4 * step}px;top:${top + base * step - ch}px;width:${3 * step}px;height:${ch}px;--cw:${Math.max(5, step * 0.2)}px`;
+      candles.innerHTML = '<i class="candle"><b class="flame"></b></i>'.repeat(3);
+      el.appendChild(candles);
+      await wait(1100);
+      if (skipped) return;
+      candles.classList.add('lit');
+      cap.innerHTML = `<span class="k">Happy birthday</span><b>今天是${esc(bd.label)}</b><span class="tap">点一下，吹蜡烛</span>`;
+      cap.classList.add('on');
+      let blow;
+      const blown = new Promise((r) => { blow = r; });
+      const onTap = (e) => {
+        if (e.target.closest('.intro-skip')) return;
+        e.stopImmediatePropagation();
+        blow();
+      };
+      el.addEventListener('click', onTap, true);
+      await Promise.race([blown, skip, sleep(15000)]);
+      el.removeEventListener('click', onTap, true);
+      if (skipped) return;
+      candles.classList.add('out');
+      confetti(200);
+      cap.classList.remove('on');
+      await sleep(350);
+      cap.innerHTML = `<span class="k">Happy birthday</span><b>生日快乐${bd.age ? ` · ${bd.age} 岁` : ''}</b>`;
+      cap.classList.add('on');
+      await wait(2300);
+      candles.style.opacity = '0';
+      moves.forEach(({ t, tr, to }) => t.animate([{ transform: tr, opacity: to ? 1 : 0 }, { transform: 'none', opacity: 1 }],
+        { duration: 900, delay: Math.random() * 200, easing: 'cubic-bezier(.65,0,.25,1)', fill: 'forwards' }));
+      if (sealWrap) sealWrap.style.opacity = '';
+      await wait(1100);
+    }
+
     let tiles = [];
     if (sprite && data.mosaic) {
       const mos = data.mosaic;
@@ -1151,6 +1512,8 @@
           { transform: 'scale(1.045)', offset: 0.52 }, { transform: 'scale(1)' },
         ], { duration: 1000, easing: 'ease-in-out' });
         await wait(1200);
+        const bd = birthdayToday(specialDays(since, data.days || []));
+        if (bd && !skipped) await cake(bd);
       }
     }
 
@@ -1219,8 +1582,7 @@
     return groups.filter((g) => g.list.length).sort((x, y) => (x.first < y.first ? -1 : 1));
   }
 
-  function atlasHTML() {
-    const groups = placeGroups();
+  function atlasHTML(p, groups) {
     if (!groups.length) return '';
     const range = (g) => {
       if (!g.last) return '';
@@ -1232,7 +1594,7 @@
     };
     const cards = groups.map((g, n) => {
       sets[`p${g.i}`] = g.list.map((m) => m.id);
-      const c = g.list.find((m) => m.fav && m.type === 'photo') || g.list.find((m) => m.type === 'photo') || g.list[0];
+      const c = tripCover(g);
       return `<li class="trip" data-p="${g.i}">
         <button class="ph trip-ph" type="button" data-id="${c.id}" data-set="p${g.i}" style="--c:${c.c}" aria-label="${esc(g.pl.name)}的照片"><img alt="" decoding="async"></button>
         <div class="trip-meta">
@@ -1243,9 +1605,8 @@
         </div>
       </li>`;
     }).join('');
-    return `<section class="sec atlas" id="map"><div class="wrap">
-      <header class="sec-head reveal"><p class="kicker">Our map</p><h2>我们一起去过的地方</h2>
-        <p class="lead">照片里的定位整理出 ${groups.length} 个地方。左右滑动下面的画册，地图会跟着飞过去；点开照片可以看这一站的全部。</p></header>
+    return `${pageHead(p, `照片里的定位整理出 ${groups.length} 个一起去过的地方。左右滑动下面的画册，地图会跟着飞过去；点开照片可以看这一站的全部。`)}
+      <section class="sec atlas" id="map"><div class="wrap">
       <div class="atlas-map reveal">
         <canvas id="atlas" aria-label="旅行地图"></canvas>
         <div class="atlas-ctl" role="group" aria-label="地图范围">
@@ -1652,24 +2013,206 @@
     follow();
     addEventListener('click', (e) => {
       if (document.body.classList.contains('is-locked') || e.target.closest('button, a, input, label, .lb')) return;
-      const n = 2 + Math.floor(Math.random() * 2);
-      for (let i = 0; i < n; i += 1) {
-        const h = document.createElement('div');
-        h.className = 'float-heart';
-        h.innerHTML = HEART;
-        h.style.left = `${e.clientX}px`;
-        h.style.top = `${e.clientY}px`;
-        h.style.setProperty('--dx', `${(Math.random() - 0.5) * 80}px`);
-        h.style.setProperty('--rot', `${(Math.random() - 0.5) * 50}deg`);
-        h.style.animationDelay = `${i * 90}ms`;
-        h.style.width = h.style.height = `${12 + Math.random() * 12}px`;
-        document.body.appendChild(h);
-        setTimeout(() => h.remove(), 1700);
+      sprinkle(e.clientX, e.clientY, 2 + Math.floor(Math.random() * 2));
+    });
+  }
+
+  function sprinkle(x, y, n) {
+    for (let i = 0; i < n; i += 1) {
+      const h = document.createElement('div');
+      h.className = 'float-heart';
+      h.innerHTML = HEART;
+      h.style.left = `${x}px`;
+      h.style.top = `${y}px`;
+      h.style.setProperty('--dx', `${(Math.random() - 0.5) * 80}px`);
+      h.style.setProperty('--rot', `${(Math.random() - 0.5) * 50}deg`);
+      h.style.animationDelay = `${i * 90}ms`;
+      h.style.width = h.style.height = `${12 + Math.random() * 12}px`;
+      document.body.appendChild(h);
+      setTimeout(() => h.remove(), 1700);
+    }
+  }
+
+  /* Double-tap (or double-click) anywhere and a heart pops up there. */
+  function tapHearts() {
+    const ok = (e) => !document.body.classList.contains('is-locked') && !e.target.closest('button, a, input, label, .lb, .intro, #atlas, .trips');
+    let popped = 0;
+    const pop = (x, y) => {
+      if (performance.now() - popped < 400) return; // a double tap can also fire dblclick
+      popped = performance.now();
+      const h = document.createElement('div');
+      h.className = 'big-heart';
+      h.innerHTML = HEART;
+      h.style.left = `${x}px`;
+      h.style.top = `${y}px`;
+      document.body.appendChild(h);
+      setTimeout(() => h.remove(), 1100);
+      sprinkle(x, y, 4);
+    };
+    addEventListener('dblclick', (e) => {
+      if (!ok(e)) return;
+      getSelection()?.removeAllRanges();
+      pop(e.clientX, e.clientY);
+    });
+    let last = null;
+    addEventListener('pointerup', (e) => {
+      if (e.pointerType === 'mouse' || !ok(e)) return;
+      const now = performance.now();
+      if (last && now - last.t < 330 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 36) { pop(e.clientX, e.clientY); last = null; }
+      else last = { t: now, x: e.clientX, y: e.clientY };
+    }, { passive: true });
+  }
+
+  /* Confetti from both sides of the screen: birthdays and opening the capsule. */
+  function confetti(n = 160) {
+    if (reduceMotion) return;
+    const c = document.createElement('canvas');
+    c.className = 'confetti';
+    c.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(c);
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    const w = innerWidth;
+    const h = innerHeight;
+    c.width = w * dpr;
+    c.height = h * dpr;
+    const g = c.getContext('2d');
+    g.scale(dpr, dpr);
+    const colors = ['#ff7d9c', '#ffd1dc', '#ffb68c', '#fff4f7', '#c9a7ff', '#ffe08a', '#9ee6d0'];
+    const lift = Math.sqrt(h / 850);
+    const bits = Array.from({ length: n }, (_, i) => {
+      const left = i % 2 === 0;
+      const a = -Math.PI / 2 + (left ? 0.42 : -0.42) + (Math.random() - 0.5) * 0.6;
+      const v = (13 + Math.random() * 11) * lift;
+      const ribbon = Math.random() < 0.18;
+      return {
+        x: left ? -8 : w + 8, y: h * 0.9, vx: Math.cos(a) * v, vy: Math.sin(a) * v, r: Math.random() * 6, vr: (Math.random() - 0.5) * 0.3,
+        w: ribbon ? 3 : 6 + Math.random() * 5, l: ribbon ? 18 + Math.random() * 12 : 4 + Math.random() * 4, c: colors[i % colors.length], ph: Math.random() * 6,
+      };
+    });
+    const t0 = performance.now();
+    const frame = (t) => {
+      g.clearRect(0, 0, w, h);
+      let alive = 0;
+      for (const b of bits) {
+        b.vx *= 0.986;
+        b.vy = b.vy * 0.986 + 0.26;
+        if (b.vy > 2.4) b.vy = 2.4; // flutter down slowly once they turn
+        b.x += b.vx + Math.sin((t - t0) / 320 + b.ph) * 0.7;
+        b.y += b.vy;
+        b.r += b.vr;
+        if (b.y > h + 30) continue;
+        alive += 1;
+        g.save();
+        g.translate(b.x, b.y);
+        g.rotate(b.r);
+        g.scale(1, Math.cos((t - t0) / 170 + b.ph));
+        g.fillStyle = b.c;
+        g.fillRect(-b.w / 2, -b.l / 2, b.w, b.l);
+        g.restore();
       }
+      if (alive && t - t0 < 9000) requestAnimationFrame(frame); else c.remove();
+    };
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- weather: petals in spring, fireflies in summer, leaves in autumn, snow in winter ---------- */
+  function weather(kind) {
+    if (reduceMotion || $('#weather')) return;
+    const canvas = document.createElement('canvas');
+    canvas.id = 'weather';
+    canvas.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(canvas);
+    const g = canvas.getContext('2d');
+    const heart = new Path2D(HEART_PATH);
+    const PALETTE = {
+      petals: ['#ffc4d2', '#ffd9e2', '#ffb3c6'], leaves: ['#e8894f', '#d9653b', '#f0a95b', '#c4513a'],
+      confetti: ['#ff7d9c', '#ffd1dc', '#ffb68c', '#c9a7ff', '#ffe08a', '#9ee6d0'], hearts: ['#ff7d9c', '#ffb3c6', '#ffd1dc'],
+    };
+    const FALL = { snow: 0.4, petals: 0.55, leaves: 0.7, confetti: 0.9, hearts: 0.45 };
+    let w = 0; let h = 0; let parts = [];
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    const make = (anywhere) => {
+      const pal = PALETTE[kind] || ['#fff'];
+      const p = {
+        x: Math.random() * w, y: anywhere ? Math.random() * h : -16, s: 0.6 + Math.random() * 0.8,
+        a: Math.random() * Math.PI * 2, spin: (Math.random() - 0.5) * 0.04, ph: Math.random() * Math.PI * 2,
+        c: pal[Math.floor(Math.random() * pal.length)], vx: (Math.random() - 0.5) * 0.3, vy: (FALL[kind] || 0.5) * (0.6 + Math.random() * 0.8),
+      };
+      if (kind === 'fireflies') { p.y = h * (0.3 + Math.random() * 0.7); p.vy = (Math.random() - 0.5) * 0.2; }
+      return p;
+    };
+    const resize = () => {
+      w = innerWidth;
+      h = innerHeight;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const n = Math.min(34, Math.max(14, (w * h) / 42000)) * (kind === 'snow' ? 1.6 : kind === 'fireflies' ? 0.8 : 1);
+      parts = Array.from({ length: Math.round(n) }, () => make(true));
+    };
+    const draw = (t) => {
+      g.clearRect(0, 0, w, h);
+      for (const p of parts) {
+        if (kind === 'fireflies') {
+          p.x += p.vx + Math.sin(t / 1600 + p.ph) * 0.25;
+          p.y += p.vy + Math.cos(t / 1900 + p.ph) * 0.2;
+          if (p.x < -10) p.x = w + 10; else if (p.x > w + 10) p.x = -10;
+          if (p.y < h * 0.2 || p.y > h + 10) p.vy = -p.vy;
+          const a = 0.2 + 0.8 * Math.max(0, Math.sin(t / 760 + p.ph));
+          const r = 11 * p.s;
+          const gr = g.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+          gr.addColorStop(0, `rgba(255, 246, 180, ${0.85 * a})`);
+          gr.addColorStop(0.25, `rgba(255, 226, 120, ${0.35 * a})`);
+          gr.addColorStop(1, 'rgba(255, 220, 110, 0)');
+          g.fillStyle = gr;
+          g.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+          continue;
+        }
+        p.y += p.vy;
+        p.x += p.vx + Math.sin(t / 1300 + p.ph) * (kind === 'snow' ? 0.2 : 0.4);
+        p.a += p.spin;
+        if (p.y > h + 20 || p.x < -30 || p.x > w + 30) Object.assign(p, make(false));
+        g.save();
+        g.translate(p.x, p.y);
+        g.rotate(p.a);
+        g.fillStyle = p.c;
+        if (kind === 'snow') {
+          g.globalAlpha = 0.35 + 0.4 * (p.s - 0.6);
+          g.beginPath(); g.arc(0, 0, 1.2 * p.s + 0.5, 0, Math.PI * 2); g.fill();
+        } else if (kind === 'petals') {
+          g.globalAlpha = 0.7;
+          g.beginPath(); g.ellipse(0, 0, 5 * p.s, 2.6 * p.s * Math.abs(Math.cos(t / 900 + p.ph)) + 0.8, 0, 0, Math.PI * 2); g.fill();
+        } else if (kind === 'leaves') {
+          const k = 6 * p.s;
+          g.globalAlpha = 0.65;
+          g.scale(1, Math.cos(t / 1100 + p.ph));
+          g.beginPath(); g.moveTo(0, -k); g.quadraticCurveTo(k * 0.95, 0, 0, k); g.quadraticCurveTo(-k * 0.95, 0, 0, -k); g.fill();
+        } else if (kind === 'confetti') {
+          g.globalAlpha = 0.8;
+          g.scale(1, Math.cos(t / 420 + p.ph));
+          g.fillRect(-3 * p.s, -4.5 * p.s, 6 * p.s, 9 * p.s);
+        } else {
+          g.globalAlpha = 0.5;
+          g.scale(0.5 * p.s, 0.5 * p.s);
+          g.translate(-12, -12);
+          g.fill(heart);
+        }
+        g.restore();
+      }
+    };
+    let raf = 0;
+    const loop = (t) => { draw(t); raf = requestAnimationFrame(loop); };
+    resize();
+    addEventListener('resize', resize);
+    raf = requestAnimationFrame(loop);
+    document.addEventListener('visibilitychange', () => {
+      cancelAnimationFrame(raf);
+      if (!document.hidden) raf = requestAnimationFrame(loop);
     });
   }
 
   sky();
   pointerFX();
+  tapHearts();
   boot();
 })();
