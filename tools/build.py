@@ -581,6 +581,9 @@ def main():
             {**ms, "photo": ref(ms.get("photo"))} for ms in story.get("milestones", [])
         ],
         "letter": story.get("letter"),
+        "firsts": [{**f, "photo": ref(f.get("photo"))} for f in story.get("firsts", [])],
+        "wishes": [{**w, "photo": ref(w.get("photo"))} for w in story.get("wishes", [])],
+        "capsule": story.get("capsule"),
         "seal": story.get("seal"),
         "days": [expand_day(d) for d in story.get("days", [])],
         "hero": [by_name[n]["s"] for n in story.get("hero", []) if n in by_name],
