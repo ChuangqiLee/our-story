@@ -9,6 +9,7 @@
   const finePointer = matchMedia('(hover: hover) and (pointer: fine)').matches;
   const HEART = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21.2s-7.8-4.6-9.9-10C.7 7.6 2.9 3.6 6.8 3.6c2.2 0 3.9 1.2 5.2 3 1.3-1.8 3-3 5.2-3 3.9 0 6.1 4 4.7 7.6-2.1 5.4-9.9 10-9.9 10z"/></svg>';
   const PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 4l14 8-14 8z"/></svg>';
+  const PAUSE = '<svg class="ic-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1.2"/><rect x="14" y="4.5" width="4" height="15" rx="1.2"/></svg>';
   const ZH_MONTH = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'];
 
   const lock = $('#lock');
@@ -134,6 +135,7 @@
     if (busy || !meta) return;
     const value = pw.value;
     if (!value.trim()) { pw.focus(); return; }
+    music.unlock();
     busy = true;
     err.textContent = '';
     lock.classList.remove('is-wrong');
@@ -165,6 +167,7 @@
     lock.classList.remove('is-checking');
     lock.classList.add('is-open');
     const intro = reduceMotion ? null : prepareIntro();
+    music.auto();
     await sleep(reduceMotion ? 0 : remembered ? 800 : 1300);
     if (intro) {
       try { await intro.play(); return; } catch (e) { /* fall back to a plain reveal */ }
@@ -176,6 +179,7 @@
     if (!story.hidden) return;
     story.hidden = false;
     document.body.classList.remove('is-locked');
+    $('#brand')?.classList.add('on');
     document.documentElement.classList.remove('has-key');
     startReveal();
     hero.start();
@@ -201,6 +205,208 @@
     const label = m.cap ? esc(m.cap) : m.dq === 'unknown' ? kind : `${dateLabel(m)} 的${kind}`;
     return `<button class="ph" type="button" data-id="${m.id}" data-set="${opts.set || ''}" style="--c:${m.c};--ar:${ar}" aria-label="${label}"><img alt="" decoding="async">${extra}</button>`;
   }
+
+
+  /* ---------- the seal ---------- */
+  // Its strokes live in the encrypted story; this only knows how to draw them.
+  const SEAL_DEFS = '<svg class="seal-defs" width="0" height="0" aria-hidden="true"><defs><linearGradient id="seal-grad" gradientUnits="userSpaceOnUse" x1="20" y1="20" x2="180" y2="180"><stop offset="0" stop-color="#ffd1dc"/><stop offset=".45" stop-color="#ff7d9c"/><stop offset="1" stop-color="#ffb68c"/></linearGradient></defs></svg>';
+  const hasSeal = () => !!(data && data.seal && data.seal.svg);
+  const sealSVG = (cls = '') => (hasSeal()
+    ? `<svg class="seal-mark ${cls}" viewBox="0 0 200 200" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${data.seal.svg}</svg>`
+    : '');
+
+  /* Write the strokes in order, let the four drops of rain fall in, then press it down like a stamp.
+     k stretches or shrinks the whole thing; returns its length in ms. */
+  function playSeal(svg, k = 1) {
+    if (!svg || reduceMotion) return 0;
+    svg.getAnimations({ subtree: true }).forEach((a) => a.cancel());
+    const draw = (el, delay, dur) => {
+      let len = 1;
+      try { len = el.getTotalLength() || 1; } catch (e) { /* not rendered */ }
+      el.style.strokeDasharray = `${len} ${len * 2}`;
+      el.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: dur * k, delay: delay * k, easing: 'cubic-bezier(.5,0,.2,1)', fill: 'both' });
+    };
+    const frame = svg.querySelector('.frame');
+    if (frame) draw(frame, 0, 900);
+    let t = 500;
+    svg.querySelectorAll('.st').forEach((p) => { draw(p, t, 300); t += 210; });
+    const drops = svg.querySelectorAll('.drop');
+    drops.forEach((d, i) => {
+      d.style.transformBox = 'fill-box';
+      d.style.transformOrigin = '50% 100%';
+      d.animate([
+        { opacity: 0, transform: 'translateY(-150px) scaleY(1.25)' },
+        { opacity: 1, transform: 'translateY(-60px) scaleY(1.2)', offset: 0.45 },
+        { opacity: 1, transform: 'translateY(2px) scale(1.15,.8)', offset: 0.86 },
+        { opacity: 1, transform: 'none' },
+      ], { duration: 520 * k, delay: (t + 120 + i * 170) * k, easing: 'cubic-bezier(.55,0,.9,.6)', fill: 'both' });
+    });
+    if (drops.length) t += 120 + drops.length * 170 + 420;
+    svg.animate([{ transform: 'none' }, { transform: 'scale(.93)', offset: 0.35 }, { transform: 'scale(1.03)', offset: 0.7 }, { transform: 'none' }],
+      { duration: 520, delay: t * k, easing: 'cubic-bezier(.2,.7,.1,1)' });
+    svg.animate([{ filter: 'drop-shadow(0 0 0 rgba(255,125,156,0))' }, { filter: 'drop-shadow(0 0 22px rgba(255,125,156,.65))', offset: 0.3 }, { filter: 'drop-shadow(0 0 0 rgba(255,125,156,0))' }],
+      { duration: 1500, delay: t * k });
+    return t * k + 520;
+  }
+
+  /* ---------- music ---------- */
+  const clock = (sec) => `${Math.floor(sec / 60)}:${pad2(Math.floor(sec % 60))}`;
+  const music = (() => {
+    const PREF = 'ourstory.music';
+    const VOL = 0.6;
+    // A few bytes of silence, played inside a tap so the real song may start later without one.
+    const SILENCE = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+    let audio = null;
+    let ctx = null;
+    let gain = null;
+    let ready = null;
+    let want = false;
+    let ducked = false;
+    let away = false;
+    let armed = false;
+    let fadeTimer = 0;
+    const pref = {
+      get() { try { return localStorage.getItem(PREF); } catch (e) { return null; } },
+      set(v) { try { localStorage.setItem(PREF, v); } catch (e) { /* private mode */ } },
+    };
+    const has = () => !!(data && data.music && data.music.id);
+
+    function ensure() {
+      if (audio) return;
+      audio = new Audio();
+      audio.loop = true;
+      audio.preload = 'auto';
+      audio.setAttribute('playsinline', '');
+      ['play', 'pause', 'timeupdate', 'seeked'].forEach((e) => audio.addEventListener(e, ui));
+      const C = window.AudioContext || window.webkitAudioContext;
+      if (C) {
+        try {
+          ctx = new C();
+          gain = ctx.createGain();
+          gain.gain.value = 0;
+          ctx.createMediaElementSource(audio).connect(gain).connect(ctx.destination);
+        } catch (e) { ctx = null; gain = null; }
+      }
+    }
+    // Call synchronously from a tap or the password submit.
+    function unlock() {
+      ensure();
+      if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+      if (!audio.src) { audio.src = SILENCE; audio.play().catch(() => {}); }
+    }
+    function load() {
+      if (!ready) ready = blobURL(data.music.id, data.music.type || 'audio/mp4');
+      ready.catch(() => { ready = null; });
+      return ready;
+    }
+    function fade(to, ms) {
+      if (gain) {
+        const t = ctx.currentTime;
+        gain.gain.cancelScheduledValues(t);
+        gain.gain.setValueAtTime(gain.gain.value, t);
+        gain.gain.linearRampToValueAtTime(to, t + ms / 1000);
+        return;
+      }
+      clearInterval(fadeTimer);
+      const from = audio.volume;
+      const t0 = performance.now();
+      fadeTimer = setInterval(() => {
+        const k = Math.min(1, (performance.now() - t0) / ms);
+        audio.volume = from + (to - from) * k;
+        if (k === 1) clearInterval(fadeTimer);
+      }, 40);
+    }
+    async function play(at) {
+      if (!has()) return false;
+      want = true;
+      ensure();
+      ui();
+      let url;
+      try { url = await load(); } catch (e) { want = false; ui(); return false; }
+      if (!want) return false;
+      if (audio.src !== url) { audio.src = url; if (!gain) audio.volume = 0; }
+      if (at != null) { try { audio.currentTime = at; } catch (e) { /* not seekable yet */ } }
+      if (ctx && ctx.state !== 'running') await Promise.race([ctx.resume().catch(() => {}), sleep(400)]);
+      if (ctx && ctx.state !== 'running') { want = false; ui(); arm(); return false; } // still needs a tap
+      try {
+        await audio.play();
+      } catch (e) {
+        want = false;
+        ui();
+        arm();
+        return false;
+      }
+      fade(VOL, at != null ? 900 : 2600);
+      pref.set('on');
+      ui();
+      return true;
+    }
+    function pause(byUser) {
+      want = false;
+      if (byUser) pref.set('off');
+      if (audio && !audio.paused) {
+        fade(0, 500);
+        setTimeout(() => { if (!want) audio.pause(); }, 520);
+      }
+      ui();
+    }
+    const playing = () => !!(audio && !audio.paused && want);
+    function toggle() { unlock(); if (playing()) pause(true); else play(); }
+    // Autoplay with sound is usually blocked without a tap: start on the first one instead.
+    function arm() {
+      if (armed || pref.get() === 'off') return;
+      armed = true;
+      $('#music-btn')?.classList.add('ask');
+      const first = (e) => {
+        if (e.target.closest && e.target.closest('#music-btn, #song-play, .song-notes')) return;
+        removeEventListener('pointerdown', first, true);
+        removeEventListener('keydown', first, true);
+        armed = false;
+        unlock();
+        play();
+      };
+      addEventListener('pointerdown', first, true);
+      addEventListener('keydown', first, true);
+    }
+    function auto() {
+      if (!has()) return;
+      if (pref.get() === 'off') { ui(); return; }
+      play();
+    }
+    function duck(on) {
+      if (on && playing()) { ducked = true; pause(false); }
+      else if (!on && ducked) { ducked = false; play(); }
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && playing()) { away = true; audio.pause(); }
+      else if (!document.hidden && away) { away = false; play(); }
+    });
+
+    function ui() {
+      const on = playing();
+      const btn = $('#music-btn');
+      if (btn) {
+        btn.classList.toggle('playing', on);
+        if (on) btn.classList.remove('ask');
+        btn.setAttribute('aria-pressed', String(on));
+        btn.setAttribute('aria-label', on ? '暂停音乐' : '播放音乐');
+      }
+      const sp = $('#song-play');
+      if (sp) sp.classList.toggle('playing', on);
+      if (!audio || !has()) return;
+      const dur = data.music.dur || audio.duration || 1;
+      const now = audio.src.startsWith('blob:') ? audio.currentTime : 0;
+      const time = $('#song-time');
+      if (time) time.textContent = `${clock(now)} / ${clock(dur)}`;
+      const bar = $('#song-bar i');
+      if (bar) bar.style.transform = `scaleX(${Math.min(1, now / dur)})`;
+      const notes = data.music.notes || [];
+      let cur = -1;
+      notes.forEach((n, i) => { if (now >= n.t) cur = i; });
+      document.querySelectorAll('.song-notes li').forEach((li, i) => li.classList.toggle('now', on && i === cur));
+    }
+    return { unlock, play, pause, toggle, auto, duck, ui, has };
+  })();
 
   /* ---------- render ---------- */
   const sets = {};
@@ -241,6 +447,9 @@
       ${places.length ? `<div class="stat"><b>${places.length}</b><span>个一起去过的地方</span><small>PLACES</small></div>` : `<div class="stat"><b>${months.length}</b><span>个留下回忆的月份</span><small>MONTHS</small></div>`}
       ${next ? `<div class="stat"><b>${next.days}</b><span>${next.days === 0 ? `今天就是 ${next.n} 周年` : `天后是 ${next.n} 周年`}</span><small>ANNIVERSARY</small></div>` : ''}
     </div></div></section>`;
+
+    /* the seal and our song */
+    html += sealHTML();
 
     /* travel map */
     html += atlasHTML();
@@ -307,17 +516,91 @@
     html += `<footer class="foot">
       <h3 class="grad">To be continued</h3>
       <p>${since ? `今天是我们在一起的第 ${nf.format(together + 1)} 天，故事还在继续。` : '故事还在继续。'}</p>
-      <div class="heart">${HEART}</div>
+      <div class="${hasSeal() ? 'foot-seal' : 'heart'}">${sealSVG('is-mini') || HEART}</div>
       <button class="relock" type="button" id="relock">在这台设备上锁上</button>
     </footer>`;
 
     story.innerHTML = html;
+    chrome();
 
     if (since) tick(since);
     hero.prepare();
     atlas.setup();
     if (media.length) setupWall();
     $('#relock').addEventListener('click', () => { store.clear(); location.reload(); });
+  }
+
+  function sealHTML() {
+    if (!hasSeal()) return '';
+    const sl = data.seal;
+    const [c1, c2] = sl.chars || [];
+    const [f1, f2] = sl.from || [];
+    return `<section class="sec" id="seal"><div class="wrap seal-sec">
+      <div class="seal-stage reveal">
+        <button class="seal-big" type="button" aria-label="再盖一次">${sealSVG('is-big')}</button>
+        <p class="seal-hint">点一下，再盖一次</p>
+      </div>
+      <div class="seal-copy">
+        <header class="sec-head reveal"><p class="kicker">Our seal</p><h2>${esc(sl.word || '')}</h2></header>
+        ${c1 && c2 ? `<div class="eq reveal">
+          <span class="g"><b>${esc(c1)}</b><small>${esc(f1 || '')}</small></span><i>+</i>
+          <span class="g"><b>${esc(c2)}</b><small>${esc(f2 || '')}</small></span><i>=</i>
+          <span class="g word"><b>${esc(sl.word || '')}</b><small>${esc(sl.say || '')}</small></span>
+        </div>` : ''}
+        ${sl.text ? `<p class="seal-text reveal">${esc(sl.text)}</p>` : ''}
+        ${music.has() ? songHTML(data.music) : ''}
+      </div>
+    </div></section>`;
+  }
+
+  function songHTML(mu) {
+    const notes = mu.notes || [];
+    return `<div class="song reveal" id="song">
+      <div class="song-head">
+        <button class="song-play" id="song-play" type="button" aria-label="播放《${esc(mu.title)}》">${PLAY}${PAUSE}</button>
+        <div class="song-meta"><p class="kicker">Our song</p><b>《${esc(mu.title)}》</b><span>${esc(mu.sub || '')}</span></div>
+      </div>
+      <div class="song-track">
+        <div class="song-bar" id="song-bar"><i></i>${notes.map((n) => `<b style="left:${((n.t / mu.dur) * 100).toFixed(2)}%"></b>`).join('')}</div>
+        <span class="song-time" id="song-time">0:00 / ${clock(mu.dur)}</span>
+      </div>
+      ${mu.about ? `<p class="song-about">${esc(mu.about)}</p>` : ''}
+      <ol class="song-notes">${notes.map((n) => `<li><button type="button" data-t="${n.t}">
+        <span class="at">${clock(n.t)}</span><span class="tt">${esc(n.title)}</span><span class="tx">${esc(n.text)}</span>
+      </button></li>`).join('')}</ol>
+      ${mu.credit ? `<p class="song-credit">${esc(mu.credit)}</p>` : ''}
+    </div>`;
+  }
+
+  /* The seal in the corner and the music button stay put while the page scrolls. */
+  function chrome() {
+    if (hasSeal() && !$('#brand')) {
+      document.body.insertAdjacentHTML('afterbegin', SEAL_DEFS);
+      document.body.insertAdjacentHTML('beforeend', `<a class="brand" id="brand" href="#top" aria-label="${esc(data.seal.word || '回到开头')}">${sealSVG('is-corner')}</a>`);
+      const b = $('#brand');
+      if (finePointer) b.addEventListener('mouseenter', () => playSeal(b.querySelector('svg'), 0.45));
+    }
+    if (music.has() && !$('#music-btn')) {
+      document.body.insertAdjacentHTML('beforeend', `<button class="music-btn" id="music-btn" type="button" aria-pressed="false" aria-label="播放音乐">
+        <span class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="music-tip">点一下，听《${esc(data.music.title)}》</span></button>`);
+      $('#music-btn').addEventListener('click', () => music.toggle());
+    }
+    const big = $('.seal-big');
+    if (big) big.addEventListener('click', () => playSeal(big.querySelector('svg')));
+    const sp = $('#song-play');
+    if (sp) sp.addEventListener('click', () => music.toggle());
+    const bar = $('#song-bar');
+    if (bar) {
+      bar.addEventListener('click', (e) => {
+        const r = bar.getBoundingClientRect();
+        music.unlock();
+        music.play(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * data.music.dur);
+      });
+    }
+    document.querySelectorAll('.song-notes button').forEach((b) => b.addEventListener('click', () => {
+      music.unlock();
+      music.play(Number(b.dataset.t));
+    }));
   }
 
   function groupByMonth(media) {
@@ -494,6 +777,15 @@
       for (const e of entries) if (e.isIntersecting) { e.target.classList.add('in'); ro.unobserve(e.target); }
     }, { rootMargin: '0px 0px -8% 0px' });
     story.querySelectorAll('.reveal, .paper').forEach((el) => ro.observe(el));
+    const stamp = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        stamp.unobserve(e.target);
+        e.target.classList.add('drawn');
+        playSeal(e.target.querySelector('.seal-mark'), e.target.classList.contains('foot-seal') ? 0.55 : 1);
+      }
+    }, { threshold: 0.45 });
+    story.querySelectorAll('.seal-stage, .foot-seal').forEach((el) => stamp.observe(el));
     observeImages(story);
     const tl = $('.tl');
     if (tl) {
@@ -533,6 +825,7 @@
     lb.classList.remove('open');
     document.body.style.overflow = '';
     stage.querySelectorAll('video').forEach((v) => v.pause());
+    music.duck(false);
     if (lastFocus) lastFocus.focus({ preventScroll: true });
   }
   function show(i) {
@@ -549,6 +842,7 @@
       if (lbSet[lbIndex] !== m.id) return;
       if (m.type === 'video') {
         stage.innerHTML = `<video src="${u}" controls playsinline autoplay></video>`;
+        stage.querySelector('video').addEventListener('play', () => music.duck(true));
       } else {
         const img = new Image();
         img.alt = m.cap || '';
@@ -749,6 +1043,7 @@
     el.innerHTML = `<div class="intro-heart" style="left:${left}px;top:${top}px;width:${W}px;height:${H}px"></div>
       <div class="intro-cover"><img alt=""></div>
       <div class="intro-cap" style="top:${top + H + 26}px"></div>
+      ${hasSeal() ? `<div class="intro-seal" style="left:${(vw - W * 0.46) / 2}px;top:${top + H * 0.44 - W * 0.23}px;width:${W * 0.46}px;height:${W * 0.46}px">${sealSVG('is-intro')}</div>` : ''}
       <button class="intro-skip" type="button">跳过</button>`;
     document.body.appendChild(el);
     const heartEl = el.querySelector('.intro-heart');
@@ -792,7 +1087,14 @@
           { transform: 'none', opacity: 1 },
         ], { duration: 1300, delay: 100 + Math.random() * 700, easing: 'cubic-bezier(.16,.84,.24,1)', fill: 'both' });
       });
-      await wait(2000);
+      await wait(900);
+      const sealWrap = el.querySelector('.intro-seal');
+      let stampAt = 1100;
+      if (sealWrap && !skipped) {
+        sealWrap.classList.add('on');
+        stampAt = Math.max(1100, playSeal(sealWrap.querySelector('svg'), 0.62) - 520);
+      }
+      await wait(stampAt);
       if (!skipped) {
         cap.classList.add('on');
         heartEl.animate([
@@ -826,6 +1128,14 @@
         const k = Math.max(vw / (W * 0.42), vh / (H * 0.36)) * 1.25;
         coverEl.classList.add('grow');
         void coverEl.offsetWidth;
+        const sealWrap = el.querySelector('.intro-seal');
+        const brand = $('#brand');
+        if (sealWrap && brand) {
+          const from = sealWrap.getBoundingClientRect();
+          const to = brand.getBoundingClientRect();
+          sealWrap.animate([{ transform: 'none' }, { transform: `translate(${to.left - from.left}px, ${to.top - from.top}px) scale(${to.width / from.width})` }],
+            { duration: 1250, delay: 120, easing: 'cubic-bezier(.65,0,.2,1)', fill: 'forwards' });
+        }
         setMask(W * k, H * k, ax - (ax - left) * k, ay - (ay - top) * k);
         tiles.forEach((t) => {
           const r = t.getBoundingClientRect();
