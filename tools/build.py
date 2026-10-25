@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""Build the encrypted love site.
+
+Reads a folder of photos/videos plus a private story.json, and writes
+docs/vault/: a public meta.json (salt, KDF settings, lock-screen text)
+and AES-GCM encrypted blobs for the story manifest and every image.
+Nothing private (names, captions, photos, dates) is written in plain text.
+
+Usage:
+  python3 tools/build.py --photos PHOTOS_DIR --story story.json \
+      --state private/state.json --out docs [--password-file FILE]
+
+The password is read from --password-file, $LOVE_PASSWORD, or a prompt.
+The private state file keeps salt, key check and source->blob ids so a
+rebuild only encrypts new photos and the git history stays small.
+"""
+import argparse
+import base64
+import datetime as dt
+import getpass
+import hashlib
+import io
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import unicodedata
+from pathlib import Path
+
+from PIL import Image, ImageOps
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+except ImportError:  # HEIC files will be skipped with a warning
+    pillow_heif = None
+
+KDF_ITER = 600_000
+SIZES = {"s": (960, 76), "l": (2048, 82)}  # long edge, WebP quality
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".tif", ".tiff"}
+VIDEO_EXT = {".mov", ".mp4", ".m4v"}
+MANIFEST_VERSION = 1
+
+
+def log(*a):
+    print(*a, file=sys.stderr)
+
+
+# ---------- crypto ----------
+
+def derive_key(password: str, salt: bytes, iterations: int) -> bytes:
+    pw = unicodedata.normalize("NFC", password.strip()).encode()
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=iterations)
+    return kdf.derive(pw)
+
+
+def seal(key: bytes, data: bytes) -> bytes:
+    iv = secrets.token_bytes(12)
+    return iv + AESGCM(key).encrypt(iv, data, None)
+
+
+def key_check(key: bytes) -> str:
+    return hashlib.sha256(b"love-site-key-check" + key).hexdigest()
+
+
+# ---------- metadata ----------
+
+def exif_info(img: Image.Image):
+    """Return (datetime or None, has_gps)."""
+    try:
+        ex = img.getexif()
+    except Exception:
+        return None, False
+    when = None
+    try:
+        sub = ex.get_ifd(0x8769)
+        raw = sub.get(0x9003) or sub.get(0x9004) or ex.get(0x0132)
+        if raw:
+            when = dt.datetime.strptime(str(raw).strip("\x00").strip()[:19], "%Y:%m:%d %H:%M:%S")
+    except Exception:
+        when = None
+    try:
+        gps = bool(ex.get_ifd(0x8825))
+    except Exception:
+        gps = False
+    return when, gps
+
+
+def video_info(path: Path):
+    """Return (datetime or None, duration seconds, width, height)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        info = json.loads(out)
+    except Exception:
+        return None, 0, 0, 0
+    tags = {k.lower(): v for k, v in (info.get("format", {}).get("tags") or {}).items()}
+    raw = tags.get("com.apple.quicktime.creationdate") or tags.get("creation_time")
+    when = None
+    if raw:
+        try:
+            when = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if when.tzinfo and "com.apple.quicktime.creationdate" not in tags:
+                when = when.astimezone()  # UTC creation_time -> local clock
+            when = when.replace(tzinfo=None)
+        except ValueError:
+            when = None
+    dur = float(info.get("format", {}).get("duration") or 0)
+    w = h = 0
+    rot = 0
+    for s in info.get("streams", []):
+        if s.get("codec_type") == "video":
+            w, h = s.get("width", 0), s.get("height", 0)
+            rot = int((s.get("tags") or {}).get("rotate", 0) or 0)
+            for sd in s.get("side_data_list", []) or []:
+                if "rotation" in sd:
+                    rot = int(sd["rotation"])
+            break
+    if abs(rot) in (90, 270):
+        w, h = h, w
+    return when, dur, w, h
+
+
+def file_time(path: Path) -> dt.datetime:
+    st = path.stat()
+    ts = getattr(st, "st_birthtime", None) or st.st_mtime
+    return dt.datetime.fromtimestamp(ts)
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ---------- image / video encoding ----------
+
+def encode_sizes(img: Image.Image):
+    img = ImageOps.exif_transpose(img)
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+    out = {}
+    for name, (edge, q) in SIZES.items():
+        im = img.copy()
+        im.thumbnail((edge, edge), Image.LANCZOS)
+        buf = io.BytesIO()
+        # Saving without exif=... drops every metadata block (GPS, device, time).
+        im.save(buf, "WEBP", quality=q, method=5)
+        out[name] = (buf.getvalue(), im.size)
+    return out
+
+
+def average_color(img: Image.Image) -> str:
+    im = ImageOps.exif_transpose(img).convert("RGB").resize((1, 1), Image.BILINEAR)
+    r, g, b = im.getpixel((0, 0))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def transcode_video(src: Path, tmpdir: Path):
+    dst = tmpdir / (src.stem + ".mp4")
+    poster = tmpdir / (src.stem + ".jpg")
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(src),
+         "-map_metadata", "-1", "-map", "0:v:0", "-map", "0:a:0?",
+         "-vf", "scale='if(gt(iw,ih),min(1280,iw),-2)':'if(gt(iw,ih),-2,min(1280,ih))'",
+         "-c:v", "libx264", "-preset", "slow", "-crf", "27", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(dst)],
+        check=True,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-ss", "0.3", "-i", str(dst), "-frames:v", "1", "-q:v", "3", str(poster)],
+        check=True,
+    )
+    return dst, poster
+
+
+# ---------- Chinese font subsets ----------
+
+PUNCT = "，。！？：；、“”‘’（）《》…—·～「」『』【】"
+
+
+def load_font_table(font_dir: Path):
+    """Map each WenKai chunk file to its unicode ranges, from the package CSS."""
+    import re
+
+    css = (font_dir / "lxgwwenkaigbscreen.css").read_text("utf-8")
+    table = []
+    for fname, rng in re.findall(r"src: url\('\./files/([^']+)'\).*?unicode-range: ([^\n}]+)", css, re.S):
+        spans = []
+        for part in rng.split(","):
+            part = part.strip().upper().replace("U+", "")
+            a, _, b = part.partition("-")
+            spans.append((int(a, 16), int(b or a, 16)))
+        table.append((font_dir / "files" / fname, spans))
+    return table
+
+
+def subset_font(table, text: str) -> bytes:
+    """One woff2 holding only the glyphs needed for `text`, merged from the chunk files."""
+    from fontTools import subset
+    from fontTools.merge import Merger
+    from fontTools.ttLib import TTFont
+
+    need = {}
+    for cp in sorted(set(map(ord, text + PUNCT + "".join(map(chr, range(0x20, 0x7F)))))):
+        for path, spans in table:
+            if any(a <= cp <= b for a, b in spans):
+                need.setdefault(path, set()).add(cp)
+                break
+    parts = []
+    for path, cps in need.items():
+        font = TTFont(path)
+        opts = subset.Options()
+        opts.layout_features = ["*"]
+        opts.notdef_outline = True
+        sub = subset.Subsetter(opts)
+        sub.populate(unicodes=cps)
+        sub.subset(font)
+        font.flavor = None
+        buf = io.BytesIO()
+        font.save(buf)
+        buf.seek(0)
+        parts.append(buf)
+    merged = Merger().merge(parts) if len(parts) > 1 else TTFont(parts[0])
+    merged.flavor = "woff2"
+    out = io.BytesIO()
+    merged.save(out)
+    return out.getvalue()
+
+
+# ---------- main ----------
+
+def load_json(path: Path, default):
+    if path and path.exists():
+        return json.loads(path.read_text("utf-8"))
+    return default
+
+
+def get_password(args) -> str:
+    if args.password_file:
+        return Path(args.password_file).read_text("utf-8").strip()
+    if os.environ.get("LOVE_PASSWORD"):
+        return os.environ["LOVE_PASSWORD"]
+    pw = getpass.getpass("Password: ")
+    if pw != getpass.getpass("Again: "):
+        sys.exit("Passwords differ.")
+    return pw
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--photos", required=True, type=Path)
+    ap.add_argument("--story", required=True, type=Path)
+    ap.add_argument("--state", required=True, type=Path)
+    ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--password-file")
+    ap.add_argument("--rekey", action="store_true", help="new salt; re-encrypt everything")
+    ap.add_argument("--max-video-seconds", type=float, default=90)
+    ap.add_argument("--zh-font", type=Path, help="lxgw-wenkai-screen-webfont package dir")
+    args = ap.parse_args()
+
+    story = load_json(args.story, {})
+    state = load_json(args.state, {})
+    password = get_password(args)
+
+    if args.rekey or "salt" not in state:
+        state = {"salt": base64.b64encode(secrets.token_bytes(16)).decode(), "iter": KDF_ITER, "media": {}}
+    salt = base64.b64decode(state["salt"])
+    key = derive_key(password, salt, state["iter"])
+    if state.get("check") and state["check"] != key_check(key):
+        sys.exit("Password differs from the one this vault was built with. Use --rekey to change it.")
+    state["check"] = key_check(key)
+
+    vault = args.out / "vault"
+    vault.mkdir(parents=True, exist_ok=True)
+
+    exclude = set(story.get("exclude", []))
+    files = sorted(p for p in args.photos.rglob("*") if p.is_file() and not p.name.startswith("."))
+    stems_with_still = {p.stem.lower() for p in files if p.suffix.lower() in IMAGE_EXT}
+
+    media = []
+    seen = set()
+    used_blobs = {"m"}
+    tmp = Path(tempfile.mkdtemp(prefix="love-build-"))
+    try:
+        for p in files:
+            ext = p.suffix.lower()
+            if p.name in exclude or (ext not in IMAGE_EXT and ext not in VIDEO_EXT):
+                continue
+            if ext in VIDEO_EXT and p.stem.lower() in stems_with_still:
+                continue  # motion half of a Live Photo; the still is enough
+            if ext in {".heic", ".heif"} and pillow_heif is None:
+                log("skip (no HEIC support):", p.name)
+                continue
+            digest = sha256_file(p)
+            if digest in seen:
+                log("duplicate:", p.name)
+                continue
+            seen.add(digest)
+            entry = state["media"].get(digest)
+            have = entry and all((vault / f"{entry[k]}.bin").exists() for k in ("s", "l", "v") if k in entry)
+            if not have:
+                entry = {"name": p.name}
+                if ext in VIDEO_EXT:
+                    when, dur, w, h = video_info(p)
+                    if dur > args.max_video_seconds:
+                        log(f"skip video longer than {args.max_video_seconds:.0f}s:", p.name)
+                        continue
+                    mp4, poster = transcode_video(p, tmp)
+                    with Image.open(poster) as im:
+                        sizes = encode_sizes(im)
+                        entry["c"] = average_color(im)
+                    entry["v"] = secrets.token_hex(8)
+                    (vault / f"{entry['v']}.bin").write_bytes(seal(key, mp4.read_bytes()))
+                    entry["dur"] = round(dur, 1)
+                    entry["type"] = "video"
+                    gps = False
+                else:
+                    with Image.open(p) as im:
+                        when, gps = exif_info(im)
+                        sizes = encode_sizes(im)
+                        entry["c"] = average_color(im)
+                    entry["type"] = "photo"
+                for k, (data, size) in sizes.items():
+                    entry[k] = secrets.token_hex(8)
+                    (vault / f"{entry[k]}.bin").write_bytes(seal(key, data))
+                entry["w"], entry["h"] = sizes["l"][1]
+                entry["dq"] = "exif" if when else "file"
+                entry["date"] = (when or file_time(p)).isoformat(timespec="seconds")
+                entry["gps_stripped"] = gps
+                state["media"][digest] = entry
+                log("added:", p.name, entry["date"])
+            entry["name"] = p.name
+            media.append(entry)
+            used_blobs.update(entry[k] for k in ("s", "l", "v") if k in entry)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # Date overrides from story.json win over EXIF.
+    dates = story.get("dates", {})
+    for m in media:
+        if m["name"] in dates:
+            m["date"] = dates[m["name"]]
+            m["dq"] = "manual"
+    media.sort(key=lambda m: m["date"])
+
+    by_name = {m["name"]: m for m in media}
+    captions = story.get("captions", {})
+
+    def ref(name):
+        return by_name[name]["s"] if name in by_name else None
+
+    manifest = {
+        "v": MANIFEST_VERSION,
+        "built": dt.datetime.now().isoformat(timespec="seconds"),
+        "names": story.get("names", ["", ""]),
+        "since": story.get("since"),
+        "tagline": story.get("tagline", ""),
+        "cover": ref(story.get("cover")) or (media[0]["s"] if media else None),
+        "chapters": story.get("chapters", {}),
+        "milestones": [
+            {**ms, "photo": ref(ms.get("photo"))} for ms in story.get("milestones", [])
+        ],
+        "letter": story.get("letter"),
+        "days": story.get("days", []),
+        "media": [
+            {
+                "id": m["s"], "l": m["l"], "v": m.get("v"), "type": m["type"],
+                "w": m["w"], "h": m["h"], "c": m["c"], "date": m["date"], "dq": m["dq"],
+                "dur": m.get("dur"), "cap": captions.get(m["name"], ""),
+                "fav": m["name"] in set(story.get("favorites", [])),
+            }
+            for m in media
+        ],
+    }
+    lock = story.get("lock", {})
+    if args.zh_font:
+        table = load_font_table(args.zh_font)
+        ui_text = "".join(
+            (args.out / f).read_text("utf-8") for f in ("index.html", "assets/love.js")
+        ) + "".join(str(v) for v in lock.values())
+        (args.out / "assets/fonts/ui-kai.woff2").write_bytes(subset_font(table, ui_text))
+        story_text = ui_text + json.dumps(manifest, ensure_ascii=False)
+        chars = "".join(sorted(set(story_text)))
+        font_hash = hashlib.sha256(chars.encode()).hexdigest()
+        font = state.get("font")
+        if not font or font["hash"] != font_hash or not (vault / f"{font['id']}.bin").exists():
+            font = {"hash": font_hash, "id": secrets.token_hex(8)}
+            (vault / f"{font['id']}.bin").write_bytes(seal(key, subset_font(table, chars)))
+            state["font"] = font
+        manifest["font"] = font["id"]
+        used_blobs.add(font["id"])
+    (vault / "m.bin").write_bytes(seal(key, json.dumps(manifest, ensure_ascii=False).encode()))
+
+    meta = {
+        "v": 1,
+        "kdf": "PBKDF2-SHA256",
+        "iter": state["iter"],
+        "salt": state["salt"],
+        "title": lock.get("title", "Our Story"),
+        "subtitle": lock.get("subtitle", "只属于我们两个人的地方"),
+        "hint": lock.get("hint", ""),
+    }
+    (vault / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", "utf-8")
+
+    # Drop blobs that no longer belong to any photo (removed or excluded).
+    stale = [f for f in vault.glob("*.bin") if f.stem not in used_blobs]
+    for f in stale:
+        f.unlink()
+
+    args.state.parent.mkdir(parents=True, exist_ok=True)
+    args.state.write_text(json.dumps(state, ensure_ascii=False, indent=1), "utf-8")
+    total = sum(f.stat().st_size for f in vault.glob("*.bin"))
+    log(f"done: {len(media)} items, {total / 1e6:.1f} MB encrypted, removed {len(stale)} stale blobs")
+
+
+if __name__ == "__main__":
+    main()

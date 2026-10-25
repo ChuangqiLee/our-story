@@ -1,0 +1,5 @@
+private/
+story.json
+*.pyc
+__pycache__/
+.DS_Store
