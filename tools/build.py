@@ -582,7 +582,9 @@ def main():
         ],
         "letter": story.get("letter"),
         "firsts": [{**f, "photo": ref(f.get("photo"))} for f in story.get("firsts", [])],
-        "wishes": [{**w, "photo": ref(w.get("photo"))} for w in story.get("wishes", [])],
+        "bucket": story.get("bucket"),
+        # Where the page saves the 100-things ticks (a GitHub branch); its token only ever ships encrypted.
+        "sync": story.get("sync"),
         "capsule": story.get("capsule"),
         "seal": story.get("seal"),
         "days": [expand_day(d) for d in story.get("days", [])],
