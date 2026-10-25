@@ -22,3 +22,5 @@ python3 tools/build.py --photos PHOTOS --story story.json --state private/state.
 ```
 
 The password is read from `--password-file`, `$LOVE_PASSWORD`, or a prompt. `state.json` remembers which photos were already encrypted, so later builds only add new ones.
+
+Photos already in the vault stay on the site without their originals, so `PHOTOS` only needs the new ones, and `--photos` can be left out for a rebuild that only changes `story.json`. To take a photo off, list its file name under `exclude`. `--rekey` with the old `--key-file` decrypts the vault and encrypts it again under the new password, so a password change needs no originals either.

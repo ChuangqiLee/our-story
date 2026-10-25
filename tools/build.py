@@ -13,6 +13,9 @@ Usage:
 The password is read from --password-file, $LOVE_PASSWORD, or a prompt.
 The private state file keeps salt, key check and source->blob ids so a
 rebuild only encrypts new photos and the git history stays small.
+Photos already in the vault stay without their originals, so PHOTOS_DIR
+only needs the new ones (or leave out --photos); list a file name under
+"exclude" in story.json to take a photo off the site.
 """
 import argparse
 import base64
@@ -64,6 +67,10 @@ def derive_key(password: str, salt: bytes, iterations: int) -> bytes:
 def seal(key: bytes, data: bytes) -> bytes:
     iv = secrets.token_bytes(12)
     return iv + AESGCM(key).encrypt(iv, data, None)
+
+
+def unseal(key: bytes, blob: bytes) -> bytes:
+    return AESGCM(key).decrypt(blob[:12], blob[12:], None)
 
 
 def key_check(key: bytes) -> str:
@@ -329,8 +336,8 @@ def assign_places(media, places, place_of, hours=6):
 MOSAIC_TILES, MOSAIC_COLS, MOSAIC_EDGE = 60, 8, 96  # the opening heart has 60 cells
 
 
-def square_tile(path: Path, edge: int) -> Image.Image:
-    with Image.open(path) as im:
+def square_tile(src, edge: int) -> Image.Image:
+    with Image.open(src) as im:
         im.draft("RGB", (edge * 4, edge * 4))
         im = ImageOps.exif_transpose(im).convert("RGB")
     w, h = im.size
@@ -342,7 +349,7 @@ def square_tile(path: Path, edge: int) -> Image.Image:
 
 def build_mosaic(media, sources, favorites, state, key, vault):
     """One small encrypted sprite of square thumbnails, so the opening heart needs a single request."""
-    photos = [m for m in media if m["type"] == "photo" and m["digest"] in sources]
+    photos = [m for m in media if m["type"] == "photo"]
     if len(photos) < 8:
         return None
     fav = set(favorites)
@@ -360,7 +367,9 @@ def build_mosaic(media, sources, favorites, state, key, vault):
         rows = (len(pool) + MOSAIC_COLS - 1) // MOSAIC_COLS
         sheet = Image.new("RGB", (MOSAIC_COLS * MOSAIC_EDGE, rows * MOSAIC_EDGE), (20, 14, 22))
         for i, m in enumerate(pool):
-            sheet.paste(square_tile(sources[m["digest"]], MOSAIC_EDGE),
+            # Without the original, the encrypted 2048px copy is plenty for a 96px tile.
+            src = sources.get(m["digest"]) or io.BytesIO(unseal(key, (vault / f"{m['l']}.bin").read_bytes()))
+            sheet.paste(square_tile(src, MOSAIC_EDGE),
                         ((i % MOSAIC_COLS) * MOSAIC_EDGE, (i // MOSAIC_COLS) * MOSAIC_EDGE))
         buf = io.BytesIO()
         sheet.save(buf, "WEBP", quality=74, method=5)
@@ -392,7 +401,7 @@ def get_password(args) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--photos", required=True, type=Path)
+    ap.add_argument("--photos", type=Path, help="new photos/videos; ones built before are kept without them")
     ap.add_argument("--story", required=True, type=Path)
     ap.add_argument("--state", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
@@ -407,6 +416,9 @@ def main():
     state = load_json(args.state, {})
     saved_key = load_json(args.key_file, None) if args.key_file else None
 
+    old = None
+    if args.rekey and saved_key and saved_key.get("salt") == state.get("salt"):
+        old = (state, base64.b64decode(saved_key["key"]))  # re-encrypt the vault itself, no originals needed
     if args.rekey or "salt" not in state:
         state = {"salt": base64.b64encode(secrets.token_bytes(16)).decode(), "iter": KDF_ITER, "media": {}}
         saved_key = None
@@ -423,9 +435,24 @@ def main():
 
     vault = args.out / "vault"
     vault.mkdir(parents=True, exist_ok=True)
+    if old:
+        old_state, old_key = old
+        for digest, entry in old_state.get("media", {}).items():
+            blobs = [k for k in ("s", "l", "v") if k in entry]
+            if not all((vault / f"{entry[k]}.bin").exists() for k in blobs):
+                continue
+            entry = dict(entry)
+            for k in blobs:
+                data = unseal(old_key, (vault / f"{entry[k]}.bin").read_bytes())
+                entry[k] = secrets.token_hex(8)
+                (vault / f"{entry[k]}.bin").write_bytes(seal(key, data))
+            state["media"][digest] = entry
+        log(f"re-encrypted {len(state['media'])} items with the new key")
+    elif args.rekey:
+        log("no key file for the old vault: only photos under --photos will be on the site")
 
     exclude = set(story.get("exclude", []))
-    files = sorted(p for p in args.photos.rglob("*") if p.is_file() and not p.name.startswith("."))
+    files = sorted(p for p in args.photos.rglob("*") if p.is_file() and not p.name.startswith(".")) if args.photos else []
     stems_with_still = {p.stem.lower() for p in files if p.suffix.lower() in IMAGE_EXT}
 
     media = []
@@ -491,6 +518,15 @@ def main():
             used_blobs.update(entry[k] for k in ("s", "l", "v") if k in entry)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+    # Photos built before stay on the site even when their originals are no longer around.
+    for digest, entry in state["media"].items():
+        if digest in seen or entry["name"] in exclude:
+            continue
+        if all((vault / f"{entry[k]}.bin").exists() for k in ("s", "l", "v") if k in entry):
+            seen.add(digest)
+            media.append({**entry, "digest": digest})
+            used_blobs.update(entry[k] for k in ("s", "l", "v") if k in entry)
 
     # Date overrides from story.json win over EXIF.
     dates = story.get("dates", {})
@@ -572,7 +608,7 @@ def main():
     }
     (vault / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", "utf-8")
 
-    # Drop blobs that no longer belong to any photo (removed or excluded).
+    # Drop blobs that no longer belong to any photo (excluded, or left over from a password change).
     stale = [f for f in vault.glob("*.bin") if f.stem not in used_blobs]
     for f in stale:
         f.unlink()
