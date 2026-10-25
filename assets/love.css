@@ -453,6 +453,7 @@ body:not(.is-locked) .music-btn { opacity: 1; pointer-events: auto; }
 
 /* ---------- small screens ---------- */
 @media (max-width: 760px) {
+  .scroll-cue { display: none; } /* phones scroll anyway, and it ran into the clock on short screens */
   .seal-sec { grid-template-columns: 1fr; gap: 28px; }
   .seal-stage { position: static; }
   .seal-big { width: min(70vw, 300px); }
