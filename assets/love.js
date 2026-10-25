@@ -446,40 +446,28 @@
     const days = specialDays(since, data.days || []);
     const groups = placeGroups();
     const firsts = (data.firsts || []).filter((f) => f.title);
-    const wishes = (data.wishes || []).filter((w) => w.text);
+    const things = bucket.items();
     sets.all = media.map((m) => m.id);
     const favs = media.filter((m) => m.fav && m.type === 'photo');
     const fav = (k) => (favs.length ? favs[k % favs.length] : media[k % media.length]);
     pages = [
-      { id: '', zh: '我们', en: 'Us', icon: ICON.us, build: (p) => homeHTML(p, { media, since, months, days }) },
+      { id: '', zh: '我们', en: 'Us', icon: ICON.us, build: (p) => homeHTML(p, { media, since, months, days, favs }) },
       {
         id: 'time', zh: '时光', en: 'Chapters', icon: ICON.time, has: months.length || firsts.length,
-        build: (p) => timeHTML(p, { media, since, months }),
-        blurb: `${months.length} 个月的照片${firsts.length ? ` · ${firsts.length} 个第一次` : ''}`,
+        build: (p) => timeHTML(p, { media, since, months, firsts, favs }),
+        blurb: `${firsts.length ? `${firsts.length} 个第一次 · ` : ''}${months.length} 个月的照片`,
         cover: photoFor(firsts[1]) || fav(0),
       },
       {
-        id: 'map', zh: '足迹', en: 'Our map', icon: ICON.map, has: groups.length,
-        build: (p) => atlasHTML(p, groups),
-        blurb: `${groups.length} 个一起去过的地方`,
-        cover: groups.length ? tripCover(groups[groups.length - 1]) : null,
-      },
-      {
-        id: 'moments', zh: '瞬间', en: 'Moments', icon: ICON.moments, has: media.length,
-        build: (p) => momentsHTML(p, media),
-        blurb: `${nf.format(media.length)} 个瞬间`,
-        cover: fav(Math.floor(Date.now() / DAY)),
-      },
-      {
-        id: 'days', zh: '纪念日', en: 'Days that matter', icon: ICON.days, has: days.length,
-        build: (p) => daysHTML(p, days),
-        blurb: days[0] ? `${days[0].left === 0 ? '就是今天' : `${days[0].left} 天后`} · ${days[0].label}` : '',
-        cover: fav(3),
+        id: 'map', zh: '足迹', en: 'Places & moments', icon: ICON.map, has: media.length,
+        build: (p) => mapHTML(p, groups, media),
+        blurb: `${groups.length ? `${groups.length} 个地方 · ` : ''}${nf.format(media.length)} 个瞬间`,
+        cover: groups.length ? tripCover(groups[groups.length - 1]) : fav(1),
       },
       {
         id: 'someday', zh: '以后', en: 'Someday', icon: ICON.someday,
-        build: (p) => somedayHTML(p, wishes),
-        blurb: `${wishes.length ? `${wishes.length} 个心愿` : '心愿清单'} · 时光胶囊`,
+        build: (p) => somedayHTML(p, things, favs),
+        blurb: things.length ? `${things.length} 件事做了 ${bucket.count()} 件 · 时光胶囊` : '时光胶囊',
         cover: media[media.length - 1],
       },
     ].filter((p) => p.has === undefined || p.has);
@@ -495,6 +483,7 @@
     atlas.setup();
     if (media.length) setupWall();
     setupCapsule();
+    bucket.setup();
     story.querySelectorAll('.relock').forEach((b) => b.addEventListener('click', () => { store.clear(); location.reload(); }));
     $('.scroll-cue')?.addEventListener('click', () => $('#top').nextElementSibling?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' }));
     route();
@@ -509,11 +498,17 @@
   const tripCover = (g) => g.list.find((m) => m.fav && m.type === 'photo') || g.list.find((m) => m.type === 'photo') || g.list[0];
   const birthdayToday = (days) => days.find((d) => d.left === 0 && /生日/.test(d.label)) || null;
 
-  function pageHead(p, lead) {
-    return `<header class="page-head"><div class="wrap">
-      <p class="page-no"><i>${pad2(p.no + 1)}</i><span>${esc(p.en)}</span></p>
-      <h1 class="page-title">${[...p.zh].map((c, i) => `<span style="--i:${i}">${esc(c)}</span>`).join('')}</h1>
-      ${lead ? `<p class="lead">${lead}</p>` : ''}
+  // A page opens with its title, a few numbers, and a small fan of photos, so the first screen is never empty.
+  function pageHead(p, lead, { facts = [], photos = [] } = {}) {
+    const fan = photos.filter(Boolean).slice(0, 4);
+    return `<header class="page-head${fan.length ? ' has-fan' : ''}"><div class="wrap">
+      <div class="head-copy">
+        <p class="page-no"><i>${pad2(p.no + 1)}</i><span>${esc(p.en)}</span></p>
+        <h1 class="page-title">${[...p.zh].map((c, i) => `<span style="--i:${i}">${esc(c)}</span>`).join('')}</h1>
+        ${lead ? `<p class="lead">${lead}</p>` : ''}
+        ${facts.length ? `<dl class="facts">${facts.map(([n, l, id]) => `<div><dt${id ? ` id="${id}"` : ''}>${n}</dt><dd>${l}</dd></div>`).join('')}</dl>` : ''}
+      </div>
+      ${fan.length ? `<div class="fan" aria-hidden="true">${fan.map((m, k) => `<span class="fan-card lazy" data-id="${m.id}" style="--c:${m.c};--k:${k}"><img alt=""></span>`).join('')}</div>` : ''}
     </div></header>`;
   }
 
@@ -521,7 +516,7 @@
     const last = i === pages.length - 1;
     const n = last ? pages[0] : pages[i + 1];
     const m = n.id ? n.cover : (hero.first() || { list: [] }).list[0];
-    return `<section class="next-sec"><div class="wrap"><a class="next reveal" href="#/${n.id}" style="--c:${m ? m.c : '#221a24'}">
+    return `<section class="next-sec"><div class="wrap"><a class="nextp reveal" href="#/${n.id}" style="--c:${m ? m.c : '#221a24'}">
       ${m ? `<span class="lazy next-bg" data-id="${m.id}"><img alt=""></span>` : ''}
       <span class="kicker">${last ? '回到开头' : '下一页'} · ${pad2(n.no + 1)}</span>
       <b>${n.zh}</b><small>${esc(n.en)}</small>
@@ -539,8 +534,8 @@
     </footer>`;
   }
 
-  /* 01 us: the cover, our seal and song, today, and the doors to every other page */
-  function homeHTML(p, { media, since, months, days }) {
+  /* 01 us: the cover, our seal and song, today and the days ahead, our favourites, and the doors to the other pages */
+  function homeHTML(p, { media, since, months, days, favs }) {
     const [a, b] = data.names || [];
     const bd = birthdayToday(days);
     let html = `<section class="hero" id="top">
@@ -562,8 +557,22 @@
     html += sealHTML();
     html += todayHTML(days);
     html += statsHTML(media, since, months);
+    html += favsHTML(favs);
     html += doorsHTML();
     return html;
+  }
+
+  // Eight favourites in a mosaic, a different eight every day.
+  function favsHTML(favs) {
+    if (favs.length < 4) return '';
+    const n = Math.min(8, favs.length);
+    const start = (Math.round(todayDate() / DAY) * n) % favs.length;
+    const list = Array.from({ length: n }, (_, k) => favs[(start + k) % favs.length]);
+    sets.favs = list.map((m) => m.id);
+    return `<section class="sec favs-sec"><div class="wrap">
+      <header class="sec-head reveal"><p class="kicker">Favorites</p><h2>最喜欢的我们</h2><p class="lead">从 ${favs.length} 张最爱里挑的，每天换一组。</p></header>
+      <div class="bento reveal">${list.map((m) => photoButton(m, { set: 'favs' })).join('')}</div>
+    </div></section>`;
   }
 
   function statsHTML(media, since, months) {
@@ -617,15 +626,29 @@
         }).join('')}
       </div>`;
     }
-    const next = days[0];
-    const right = next ? `<a class="soon reveal${/生日/.test(next.label) ? ' bday' : ''}" href="#/days">
-        <p class="kicker">Next</p>
-        <div class="soon-n">${next.left === 0 ? '<b>今天</b>' : `<b>${nf.format(next.left)}</b><span>天后</span>`}</div>
-        <p class="soon-what">${esc(next.label)}${next.age ? ` · ${next.age} 岁` : ''}</p>
-        <small>${fmtDate(next.when)}</small>
-      </a>` : '';
+    const right = days.length ? daysCard(days) : '';
     if (!left && !right) return '';
     return `<section class="sec today-sec"><div class="wrap today${left && right ? '' : ' one'}">${left}${right}</div></section>`;
+  }
+
+  // The next day that matters, big, and every other one under it.
+  function daysCard(days) {
+    const [next, ...rest] = days;
+    const isBday = (d) => /生日/.test(d.label);
+    const sub = (d) => [fmtDate(d.when), d.age ? `${d.age} 岁` : '', esc(d.note)].filter(Boolean).join(' · ');
+    return `<div class="soon reveal${isBday(next) ? ' bday' : ''}" id="days">
+      <p class="kicker">Days that matter</p>
+      <div class="soon-top">
+        <div class="soon-n">${next.left === 0 ? '<b>今天</b>' : `<b>${nf.format(next.left)}</b><span>天后</span>`}</div>
+        <p class="soon-what">${esc(next.label)}</p>
+        <small>${sub(next)}</small>
+      </div>
+      ${rest.length ? `<ul class="soon-list">${rest.map((d) => `<li class="${isBday(d) ? 'bday' : ''}">
+        <span class="sl-l">${esc(d.label)}<small>${sub(d)}</small></span>
+        <b>${d.left === 0 ? '今天' : nf.format(d.left)}</b><em>${d.left === 0 ? '' : '天后'}</em>
+      </li>`).join('')}</ul>` : ''}
+      ${days.some((d) => isBday(d) && d.left > 0) ? '<p class="soon-tease">生日那天打开网站，有个小惊喜。</p>' : ''}
+    </div>`;
   }
 
   function doorsHTML() {
@@ -636,14 +659,22 @@
       <div class="doors">${doors.map((p, k) => `<a class="door reveal" href="#/${p.id}" style="--c:${p.cover ? p.cover.c : '#221a24'};transition-delay:${(k % 3) * 0.07}s">
         ${p.cover ? `<span class="lazy door-bg" data-id="${p.cover.id}"><img alt=""></span>` : ''}
         <span class="door-no">${pad2(p.no + 1)}</span><span class="door-ic" aria-hidden="true">${p.icon}</span>
-        <b>${p.zh}</b><small>${esc(p.en)}</small>${p.blurb ? `<em>${esc(p.blurb)}</em>` : ''}
+        <b>${p.zh}</b><small>${esc(p.en)}</small>${p.blurb ? `<em${p.id === 'someday' ? ' data-bk-blurb' : ''}>${esc(p.blurb)}</em>` : ''}
       </a>`).join('')}</div>
     </div></section>`;
   }
 
   /* 02 chapters: our firsts, then the timeline month by month */
-  function timeHTML(p, { media, since, months }) {
-    let html = pageHead(p, since ? `从 ${fmtDate(data.since)} 开始，一个月一个月攒下来的。` : '');
+  function timeHTML(p, { media, since, months, firsts, favs }) {
+    const fan = firsts.map(photoFor).filter(Boolean);
+    let html = pageHead(p, since ? `从 ${fmtDate(data.since)} 开始，一个月一个月攒下来的。` : '', {
+      facts: [
+        ...(since ? [[nf.format(Math.floor((Date.now() - since) / DAY)), '天在一起']] : []),
+        [String(months.length), '个月有照片'],
+        ...(firsts.length ? [[String(firsts.length), '个第一次']] : []),
+      ],
+      photos: (fan.length >= 3 ? fan : [...fan, ...favs]).slice(-4),
+    });
     html += firstsHTML();
     const items = timelineItems(months, withAnniversaries(data.milestones || [], since, media), data.chapters || {});
     if (items.length) {
@@ -700,59 +731,99 @@
     </div></section>`;
   }
 
-  /* 04 moments: every photo */
-  function momentsHTML(p, media) {
+  /* 03 places and moments: the map and its trips, then every photo */
+  function mapHTML(p, groups, media) {
     const years = [...new Set(media.map((m) => m.date.slice(0, 4)))];
-    return `${pageHead(p, `一共 ${nf.format(media.length)} 个瞬间。点开任意一张，可以左右翻看。`)}
-      <section class="sec" id="gallery"><div class="wrap">
-        ${years.length > 1 ? `<div class="chips reveal" role="group" aria-label="按年份筛选"><button class="chip" aria-pressed="true" data-year="">全部</button>${years.map((y) => `<button class="chip" aria-pressed="false" data-year="${y}">${y}</button>`).join('')}</div>` : ''}
-        <div class="wall" id="wall"></div>
-        <div class="wall-more"><button class="btn" id="wall-more" hidden>再看更多</button></div>
-      </div></section>`;
+    const lead = groups.length
+      ? `照片里的定位整理出 ${groups.length} 个一起去过的地方。左右滑动画册，地图会跟着飞过去；再往下，是全部 ${nf.format(media.length)} 个瞬间。`
+      : `一共 ${nf.format(media.length)} 个瞬间。点开任意一张，可以左右翻看。`;
+    return pageHead(p, lead, {
+      facts: [
+        ...(groups.length ? [[String(groups.length), '个一起去过的地方']] : []),
+        [nf.format(media.length), '个瞬间'],
+        [String(years.length), '个年头'],
+      ],
+      photos: groups.length >= 4 ? groups.slice(-4).map(tripCover) : media.filter((m) => m.fav).slice(0, 4),
+    }) + atlasHTML(groups) + galleryHTML(media, years);
   }
 
-  /* 05 days that matter */
-  function daysHTML(p, days) {
-    return `${pageHead(p, '生日、周年，还有每一个一百天，都替你们记着。')}
-      <section class="sec" id="days"><div class="wrap">
-        <div class="days">${days.map((d) => `<div class="day reveal${d.left === 0 ? ' today' : ''}${/生日/.test(d.label) ? ' bday' : ''}">
-          <div class="label">${esc(d.label)}</div>
-          <b>${d.left === 0 ? '今天' : nf.format(d.left)}</b>
-          <small>${d.left === 0 ? 'TODAY ♥' : `DAYS · ${fmtDate(d.when)}`}</small>
-          ${d.age || d.note ? `<div class="day-note">${[d.age ? `${d.age} 岁` : '', esc(d.note)].filter(Boolean).join(' · ')}</div>` : ''}
-          ${/生日/.test(d.label) && d.left > 0 ? '<div class="day-tease">那天打开网站，有个小惊喜</div>' : ''}
-        </div>`).join('')}</div>
-      </div></section>`;
+  function galleryHTML(media, years) {
+    return `<section class="sec" id="gallery"><div class="wrap">
+      <header class="sec-head reveal"><p class="kicker">Moments</p><h2>所有瞬间</h2><p class="lead">一共 ${nf.format(media.length)} 个。点开任意一张，可以左右翻看。</p></header>
+      ${years.length > 1 ? `<div class="chips reveal" role="group" aria-label="按年份筛选"><button class="chip" aria-pressed="true" data-year="">全部</button>${years.map((y) => `<button class="chip" aria-pressed="false" data-year="${y}">${y}</button>`).join('')}</div>` : ''}
+      <div class="wall" id="wall"></div>
+      <div class="wall-more"><button class="btn" id="wall-more" hidden>再看更多</button></div>
+    </div></section>`;
   }
 
-  /* 06 someday: what we want to do together, and a time capsule */
+  /* 04 someday: a hundred things to do together, and a time capsule */
   const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
-  function somedayHTML(p, wishes) {
-    const done = wishes.filter((w) => w.done).length;
-    sets.wishes = [];
-    const items = wishes.map((w) => {
-      const m = w.photo && byId.get(w.photo);
-      if (m) sets.wishes.push(m.id);
-      return `<li class="wish reveal${w.done ? ' done' : ''}">
-        <span class="box">${CHECK}</span>
-        <span class="wt">${esc(w.text)}${typeof w.done === 'string' ? `<small>${fmtDate(w.done)} 实现了</small>` : ''}</span>
-        ${m ? `<span class="wph">${photoButton(m, { set: 'wishes' })}</span>` : ''}
-      </li>`;
-    }).join('');
-    return `${pageHead(p, '想一起做的事，和写给以后的我们。')}
-      <section class="sec wishes-sec"><div class="wrap narrow">
-        <header class="sec-head reveal"><p class="kicker">Wish list</p><h2>想一起做的事</h2>
-          ${wishes.length ? `<p class="lead">实现了 ${done} 个，还有 ${wishes.length - done} 个在路上。</p>` : ''}</header>
-        ${wishes.length ? `<ol class="wishes">${items}</ol>` : `<div class="wish-empty reveal"><span class="box">${CHECK}</span><p>第一条心愿，等你们一起写下。</p></div>`}
-      </div></section>
+  const SHARE = ic('<path d="M12 15V4.5M8 8.5l4-4 4 4"/><path d="M5.5 12.5V18a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-5.5"/>');
+  function somedayHTML(p, things, favs) {
+    const facts = [];
+    if (things.length) {
+      const c = bucket.count();
+      facts.push([String(c), '件做过了', 'fact-done'], [String(things.length - c), '件还没做', 'fact-todo']);
+    }
+    const openOn = capsuleOpenOn();
+    if (openOn) {
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      const left = Math.round((openOn - now) / DAY);
+      if (left > 0) facts.push([nf.format(left), '天后打开胶囊']);
+    }
+    const n = things.length === 100 ? '一百' : String(things.length);
+    return `${pageHead(p, things.length ? `${n}件想和对方一起做的事，做过的打个勾；还有一个封好的时光胶囊。` : '写给以后的我们。', { facts, photos: favs.slice(-4) })}
+      ${bucketHTML(things)}
       ${capsuleHTML()}`;
+  }
+
+  function bucketHTML(things) {
+    if (!things.length) return '';
+    const groups = data.bucket.groups;
+    return `<section class="sec bucket-sec" id="bucket"><div class="wrap">
+      <header class="bk-head reveal">
+        <div class="bk-copy">
+          <p class="kicker">Our ${things.length} things</p>
+          <h2>情侣要一起做的 ${things.length} 件事</h2>
+          <p class="lead">做过的，点一下打个勾，它就会暗下去；还亮着的，是接下来要一起去做的。</p>
+        </div>
+        <div class="bk-meter">
+          <svg viewBox="0 0 120 120" aria-hidden="true">
+            <defs><linearGradient id="bk-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffd1dc"/><stop offset=".5" stop-color="#ff7d9c"/><stop offset="1" stop-color="#ffb68c"/></linearGradient></defs>
+            <circle class="bk-track" cx="60" cy="60" r="52"/><circle class="bk-arc" id="bk-arc" cx="60" cy="60" r="52" pathLength="100"/>
+          </svg>
+          <div class="bk-num"><b id="bk-done">0</b><span>/ ${things.length}</span></div>
+        </div>
+      </header>
+      <div class="bk-bar">
+        <div class="bk-filter" role="group" aria-label="筛选">
+          <button type="button" data-f="" aria-pressed="true">全部</button><button type="button" data-f="todo" aria-pressed="false">还没做</button><button type="button" data-f="done" aria-pressed="false">做过了</button>
+        </div>
+        <button class="bk-share" id="bk-share" type="button">${SHARE}<span>同步给 TA</span></button>
+      </div>
+      <div class="bk-groups" id="bk-groups" data-f="">${groups.map((g, gi) => `<section class="bk-group reveal" style="transition-delay:${(gi % 2) * 0.06}s">
+        <header class="bk-gh"><span class="bk-gn">${pad2(gi + 1)}</span><h3>${esc(g.t)}</h3>${g.en ? `<small>${esc(g.en)}</small>` : ''}<em data-bk-g="${gi}" data-of="${g.items.length}">0/${g.items.length}</em></header>
+        <ol class="bk-list">${things.filter((x) => x.gi === gi).map((x) => `<li><button class="bk-item" type="button" data-n="${x.n}" data-g="${gi}" aria-pressed="false">
+          <span class="bk-no">${String(x.n).padStart(3, '0')}</span><span class="bk-t">${esc(x.t)}<small class="bk-d"></small></span><span class="bk-box">${CHECK}</span>
+        </button></li>`).join('')}</ol>
+      </section>`).join('')}</div>
+      <p class="bk-note">勾会记在这台手机或电脑上。点「同步给 TA」，把链接发给对方；对方打开，两边的勾就合在一起了。</p>
+    </div></section>`;
+  }
+
+  // The capsule opens on its own date, or on our fifth anniversary.
+  function capsuleOpenOn() {
+    const cap = data.capsule;
+    const since = data.since ? parseDay(data.since) : null;
+    if (!cap) return null;
+    return cap.open ? parseDay(cap.open) : since ? new Date(since.getFullYear() + 5, since.getMonth(), since.getDate()) : null;
   }
 
   function capsuleHTML() {
     const cap = data.capsule;
     const since = data.since ? parseDay(data.since) : null;
-    if (!cap) return '';
-    const openOn = cap.open ? parseDay(cap.open) : since ? new Date(since.getFullYear() + 5, since.getMonth(), since.getDate()) : null;
+    const openOn = capsuleOpenOn();
     if (!openOn) return '';
     // The real date, never a preview date: the capsule opens when it opens.
     const now = new Date();
@@ -787,14 +858,161 @@
     });
   }
 
-  /* ---------- page routing: #/map, #/moments ... ---------- */
+
+  function toast(msg) {
+    let t = $('#toast');
+    if (!t) {
+      document.body.insertAdjacentHTML('beforeend', '<div class="toast" id="toast" role="status" aria-live="polite"></div>');
+      t = $('#toast');
+    }
+    t.textContent = msg;
+    t.classList.add('on');
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => t.classList.remove('on'), 2800);
+  }
+
+  /* ---------- the 100 things: ticks stay on each device and travel between the two of us by link ---------- */
+  const bucket = (() => {
+    const LS = 'ourstory.bucket.v1';
+    const EPOCH = Date.UTC(2023, 0, 1) / 60000; // ticks are stamped in minutes from here
+    let state = null; // number -> [done 0/1, minute]
+    let list = [];
+    const load = () => {
+      if (state) return;
+      try { state = JSON.parse(localStorage.getItem(LS)) || {}; } catch (e) { state = {}; }
+    };
+    const save = () => { try { localStorage.setItem(LS, JSON.stringify(state)); } catch (e) { /* private mode */ } };
+    const done = (n) => !!(state[n] && state[n][0]);
+    const count = () => list.filter((x) => done(x.n)).length;
+    const minute = () => Math.floor(Date.now() / 60000 - EPOCH);
+    // In a link every tick is 8 base-36 characters: the number (2), done or not (1), and when (5).
+    const b36 = (v, w) => Math.max(0, v).toString(36).padStart(w, '0').slice(-w);
+    const encode = () => Object.keys(state).map((n) => b36(Number(n), 2) + (state[n][0] ? 1 : 0) + b36(state[n][1], 5)).join('');
+    const decode = (code) => {
+      const out = {};
+      for (let i = 0; i + 8 <= code.length; i += 8) {
+        const n = parseInt(code.slice(i, i + 2), 36);
+        const t = parseInt(code.slice(i + 3, i + 8), 36);
+        if (n > 0 && Number.isFinite(t)) out[n] = [code[i + 2] === '1' ? 1 : 0, t];
+      }
+      return out;
+    };
+    // Whoever ticked (or unticked) a thing last wins.
+    function merge(other) {
+      let gained = 0;
+      for (const [n, e] of Object.entries(other)) {
+        if (state[n] && state[n][1] >= e[1]) continue;
+        if (e[0] && !done(n)) gained += 1;
+        state[n] = e;
+      }
+      save();
+      return gained;
+    }
+
+    function items() {
+      load();
+      list = [];
+      ((data.bucket && data.bucket.groups) || []).forEach((g, gi) => g.items.forEach((t) => list.push({ n: list.length + 1, t, gi })));
+      return list;
+    }
+
+    function paint() {
+      const root = $('#bk-groups');
+      if (!root) return;
+      const per = {};
+      root.querySelectorAll('.bk-item').forEach((el) => {
+        const n = Number(el.dataset.n);
+        const d = done(n);
+        el.classList.toggle('done', d);
+        el.parentElement.classList.toggle('done', d);
+        el.setAttribute('aria-pressed', String(d));
+        el.querySelector('.bk-d').textContent = d ? `${fmtDate(new Date((state[n][1] + EPOCH) * 60000))} 做到了` : '';
+        if (d) per[el.dataset.g] = (per[el.dataset.g] || 0) + 1;
+      });
+      root.querySelectorAll('[data-bk-g]').forEach((e) => { e.textContent = `${per[e.dataset.bkG] || 0}/${e.dataset.of}`; });
+      const c = count();
+      const put = (sel, v) => { const e = $(sel); if (e) e.textContent = v; };
+      put('#bk-done', c);
+      put('#fact-done', c);
+      put('#fact-todo', list.length - c);
+      put('[data-bk-blurb]', `${list.length} 件事做了 ${c} 件 · 时光胶囊`);
+      const arc = $('#bk-arc');
+      if (arc) {
+        arc.style.strokeDasharray = `${((c / list.length) * 100).toFixed(2)} 100`;
+        arc.style.opacity = c ? 1 : 0; // a round cap would leave a dot at zero
+      }
+    }
+
+    async function share() {
+      const url = `${location.origin}${location.pathname}#/someday?t=${encode()}`;
+      try {
+        if (navigator.share) { await navigator.share({ title: '我们的 100 件事', text: `我打了 ${count()} 个勾，点开同步一下`, url }); return; }
+      } catch (e) {
+        if (e.name === 'AbortError') return;
+      }
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('链接复制好了，发给 TA 吧');
+      } catch (e) {
+        window.prompt('复制这个链接，发给 TA：', url);
+      }
+    }
+
+    function setup() {
+      const root = $('#bk-groups');
+      if (!root) return;
+      // Opened from a link the other one sent: fold their ticks into ours.
+      const link = /[?&]t=([0-9a-z]+)/.exec(location.hash);
+      if (link) {
+        const gained = merge(decode(link[1]));
+        history.replaceState(null, '', `${location.pathname}${location.search}#/someday`);
+        const say = () => (story.hidden ? setTimeout(say, 600) : toast(gained ? `和 TA 的勾合在一起了，多了 ${gained} 个勾` : '两边的勾已经一样了'));
+        setTimeout(say, 1200);
+      }
+      paint();
+      root.addEventListener('click', (e) => {
+        const el = e.target.closest('.bk-item');
+        if (!el) return;
+        const n = Number(el.dataset.n);
+        const v = done(n) ? 0 : 1;
+        state[n] = [v, minute()];
+        save();
+        paint();
+        el.classList.remove('pop');
+        void el.offsetWidth;
+        el.classList.add('pop');
+        if (!v) return;
+        const r = el.querySelector('.bk-box').getBoundingClientRect();
+        sprinkle(r.left + r.width / 2, r.top + r.height / 2, 6);
+        const c = count();
+        if (c === list.length) { confetti(260); toast(`${list.length} 件事，全都一起做到了！`); } else if (c % 10 === 0) { confetti(120); toast(`第 ${c} 件！`); }
+      });
+      document.querySelectorAll('.bk-filter button').forEach((b) => b.addEventListener('click', () => {
+        document.querySelectorAll('.bk-filter button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+        root.dataset.f = b.dataset.f;
+      }));
+      $('#bk-share').addEventListener('click', share);
+      // Ticked in another tab on this device.
+      addEventListener('storage', (e) => { if (e.key === LS) { state = null; load(); paint(); } });
+    }
+
+    return { items, count: () => { load(); return count(); }, setup };
+  })();
+
+  /* ---------- page routing: #/time, #/map, #/someday ---------- */
   let current = null;
   let tapAt = null;
   addEventListener('pointerdown', (e) => { tapAt = [e.clientX, e.clientY]; }, { passive: true, capture: true });
+  // Pages that were folded into others still open where their content now lives.
+  const MOVED = { moments: ['map', 'gallery'], days: ['', 'days'] };
   function route() {
     const m = /^#\/([\w-]*)/.exec(location.hash);
-    const page = pages.find((p) => p.id === (m ? m[1] : '')) || pages[0];
-    if (!page || page.id === current) return;
+    const moved = MOVED[m ? m[1] : ''];
+    const id = moved ? moved[0] : m ? m[1] : '';
+    const page = pages.find((p) => p.id === id) || pages[0];
+    const jump = () => { if (moved) setTimeout(() => document.getElementById(moved[1])?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 150); };
+    if (!page) return;
+    if (page.id === current) { jump(); return; }
     const prev = current == null ? null : story.querySelector(`.page[data-page="${current}"]`);
     const next = story.querySelector(`.page[data-page="${page.id}"]`);
     current = page.id;
@@ -806,6 +1024,7 @@
       if (prev) { prev.hidden = true; prev.classList.remove('leaving'); }
       next.hidden = false;
       scrollTo(0, 0);
+      jump();
       if (!prev || reduceMotion) return;
       next.classList.add('entering');
       void next.offsetWidth;
@@ -1582,7 +1801,7 @@
     return groups.filter((g) => g.list.length).sort((x, y) => (x.first < y.first ? -1 : 1));
   }
 
-  function atlasHTML(p, groups) {
+  function atlasHTML(groups) {
     if (!groups.length) return '';
     const range = (g) => {
       if (!g.last) return '';
@@ -1605,8 +1824,7 @@
         </div>
       </li>`;
     }).join('');
-    return `${pageHead(p, `照片里的定位整理出 ${groups.length} 个一起去过的地方。左右滑动下面的画册，地图会跟着飞过去；点开照片可以看这一站的全部。`)}
-      <section class="sec atlas" id="map"><div class="wrap">
+    return `<section class="sec atlas" id="map"><div class="wrap">
       <div class="atlas-map reveal">
         <canvas id="atlas" aria-label="旅行地图"></canvas>
         <div class="atlas-ctl" role="group" aria-label="地图范围">
