@@ -73,11 +73,11 @@ def key_check(key: bytes) -> str:
 # ---------- metadata ----------
 
 def exif_info(img: Image.Image):
-    """Return (datetime or None, has_gps)."""
+    """Return (datetime or None, (lat, lon) or None, camera model or "")."""
     try:
         ex = img.getexif()
     except Exception:
-        return None, False
+        return None, None, ""
     when = None
     try:
         sub = ex.get_ifd(0x8769)
@@ -86,11 +86,18 @@ def exif_info(img: Image.Image):
             when = dt.datetime.strptime(str(raw).strip("\x00").strip()[:19], "%Y:%m:%d %H:%M:%S")
     except Exception:
         when = None
+    where = None
     try:
-        gps = bool(ex.get_ifd(0x8825))
+        g = ex.get_ifd(0x8825)
+        if g.get(2) and g.get(4):
+            deg = lambda v: float(v[0]) + float(v[1]) / 60 + float(v[2]) / 3600
+            lat = deg(g[2]) * (-1 if g.get(1) == "S" else 1)
+            lon = deg(g[4]) * (-1 if g.get(3) == "W" else 1)
+            where = (round(lat, 3), round(lon, 3))
     except Exception:
-        gps = False
-    return when, gps
+        where = None
+    model = str(ex.get(0x0110) or "").strip("\x00").strip()
+    return when, where, model
 
 
 def video_info(path: Path):
@@ -239,6 +246,31 @@ def subset_font(table, text: str) -> bytes:
     return out.getvalue()
 
 
+# ---------- special days ----------
+
+def expand_day(day):
+    """A lunar birthday moves every year, so list its solar dates for the years ahead."""
+    if "lunar" not in day:
+        return day
+    from lunardate import LunarDate
+
+    month, dd = map(int, day["lunar"].split("-"))
+    this_year = dt.date.today().year
+    dates = []
+    for y in range(this_year - 2, this_year + 40):
+        try:
+            solar = LunarDate(y, month, dd).to_solar_date()
+        except ValueError:  # day 30 missing in a short month
+            solar = LunarDate(y, month, dd - 1).to_solar_date()
+        item = {"d": solar.isoformat()}
+        if day.get("born"):
+            item["age"] = y - int(day["born"])
+        dates.append(item)
+    out = {k: v for k, v in day.items() if k not in ("lunar", "born")}
+    out["dates"] = dates
+    return out
+
+
 # ---------- main ----------
 
 def load_json(path: Path, default):
@@ -265,6 +297,7 @@ def main():
     ap.add_argument("--state", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--password-file")
+    ap.add_argument("--key-file", type=Path, help="private file keeping the derived key, so rebuilds need no password")
     ap.add_argument("--rekey", action="store_true", help="new salt; re-encrypt everything")
     ap.add_argument("--max-video-seconds", type=float, default=90)
     ap.add_argument("--zh-font", type=Path, help="lxgw-wenkai-screen-webfont package dir")
@@ -272,12 +305,18 @@ def main():
 
     story = load_json(args.story, {})
     state = load_json(args.state, {})
-    password = get_password(args)
+    saved_key = load_json(args.key_file, None) if args.key_file else None
 
     if args.rekey or "salt" not in state:
         state = {"salt": base64.b64encode(secrets.token_bytes(16)).decode(), "iter": KDF_ITER, "media": {}}
-    salt = base64.b64decode(state["salt"])
-    key = derive_key(password, salt, state["iter"])
+        saved_key = None
+    if saved_key and saved_key.get("salt") == state["salt"] and not (args.password_file or os.environ.get("LOVE_PASSWORD")):
+        key = base64.b64decode(saved_key["key"])
+    else:
+        key = derive_key(get_password(args), base64.b64decode(state["salt"]), state["iter"])
+        if args.key_file:
+            args.key_file.parent.mkdir(parents=True, exist_ok=True)
+            args.key_file.write_text(json.dumps({"salt": state["salt"], "key": base64.b64encode(key).decode()}), "utf-8")
     if state.get("check") and state["check"] != key_check(key):
         sys.exit("Password differs from the one this vault was built with. Use --rekey to change it.")
     state["check"] = key_check(key)
@@ -325,20 +364,24 @@ def main():
                     (vault / f"{entry['v']}.bin").write_bytes(seal(key, mp4.read_bytes()))
                     entry["dur"] = round(dur, 1)
                     entry["type"] = "video"
-                    gps = False
+                    where, model = None, "video"
                 else:
                     with Image.open(p) as im:
-                        when, gps = exif_info(im)
+                        when, where, model = exif_info(im)
                         sizes = encode_sizes(im)
                         entry["c"] = average_color(im)
                     entry["type"] = "photo"
+                    # Screenshots and app re-saves stamp the save time and drop the camera model.
+                    if when and not model and abs((dt.datetime.now() - when).days) < 3:
+                        when = None
                 for k, (data, size) in sizes.items():
                     entry[k] = secrets.token_hex(8)
                     (vault / f"{entry[k]}.bin").write_bytes(seal(key, data))
                 entry["w"], entry["h"] = sizes["l"][1]
-                entry["dq"] = "exif" if when else "file"
+                entry["dq"] = "exif" if when else "unknown"
                 entry["date"] = (when or file_time(p)).isoformat(timespec="seconds")
-                entry["gps_stripped"] = gps
+                if where:
+                    entry["gps"] = where  # private state only; never written to the site
                 state["media"][digest] = entry
                 log("added:", p.name, entry["date"])
             entry["name"] = p.name
@@ -354,6 +397,9 @@ def main():
             m["date"] = dates[m["name"]]
             m["dq"] = "manual"
     media.sort(key=lambda m: m["date"])
+    unknown = [m["name"] for m in media if m["dq"] == "unknown"]
+    if unknown:
+        log(f"{len(unknown)} without a real shooting date (add them under \"dates\"):", ", ".join(unknown))
 
     by_name = {m["name"]: m for m in media}
     captions = story.get("captions", {})
@@ -373,7 +419,7 @@ def main():
             {**ms, "photo": ref(ms.get("photo"))} for ms in story.get("milestones", [])
         ],
         "letter": story.get("letter"),
-        "days": story.get("days", []),
+        "days": [expand_day(d) for d in story.get("days", [])],
         "media": [
             {
                 "id": m["s"], "l": m["l"], "v": m.get("v"), "type": m["type"],

@@ -185,7 +185,8 @@
   function photoButton(m, opts = {}) {
     const ar = (m.w / m.h).toFixed(4);
     const extra = opts.more ? `<span class="more">+${opts.more}</span>` : (m.type === 'video' ? `<span class="play">${PLAY}</span>` : '');
-    const label = m.cap ? esc(m.cap) : `${fmtDate(m.date)} 的${m.type === 'video' ? '视频' : '照片'}`;
+    const kind = m.type === 'video' ? '视频' : '照片';
+    const label = m.cap ? esc(m.cap) : m.dq === 'unknown' ? kind : `${fmtDate(m.date)} 的${kind}`;
     return `<button class="ph" type="button" data-id="${m.id}" data-set="${opts.set || ''}" style="--c:${m.c};--ar:${ar}" aria-label="${label}"><img alt="" decoding="async">${extra}</button>`;
   }
 
@@ -271,6 +272,7 @@
           <div class="label">${esc(d.label)}</div>
           <b>${d.left === 0 ? '今天' : nf.format(d.left)}</b>
           <small>${d.left === 0 ? 'TODAY ♥' : `DAYS · ${fmtDate(d.when)}`}</small>
+          ${d.age || d.note ? `<div class="day-note">${[d.age ? `${d.age} 岁` : '', esc(d.note)].filter(Boolean).join(' · ')}</div>` : ''}
         </div>`).join('')}</div>
       </div></section>`;
     }
@@ -307,6 +309,7 @@
   function groupByMonth(media) {
     const map = new Map();
     for (const m of media) {
+      if (m.dq === 'unknown') continue; // no real shooting date: photo wall only
       const k = m.date.slice(0, 7);
       if (!map.has(k)) map.set(k, []);
       map.get(k).push(m);
@@ -386,17 +389,25 @@
       out.push({ label: `在一起的第 ${nf.format(target)} 天`, when, left: Math.round((when - today) / DAY) });
     }
     for (const d of extra) {
-      if (!d.date) continue;
-      const parts = d.date.split('-').map(Number);
-      let when;
-      if (parts.length === 2) {
-        when = new Date(today.getFullYear(), parts[0] - 1, parts[1]);
-        if (when < today) when = new Date(today.getFullYear() + 1, parts[0] - 1, parts[1]);
-      } else {
-        when = new Date(parts[0], parts[1] - 1, parts[2]);
-        if (when < today) continue;
+      let when = null;
+      let age = null;
+      if (d.dates) {
+        // Lunar dates arrive already converted, one per year.
+        const next = d.dates.find((x) => parseDay(x.d) >= today);
+        if (next) { when = parseDay(next.d); age = next.age ?? null; }
+      } else if (d.date) {
+        const parts = d.date.split('-').map(Number);
+        if (parts.length === 2) {
+          when = new Date(today.getFullYear(), parts[0] - 1, parts[1]);
+          if (when < today) when = new Date(today.getFullYear() + 1, parts[0] - 1, parts[1]);
+          if (d.born) age = when.getFullYear() - d.born;
+        } else {
+          when = new Date(parts[0], parts[1] - 1, parts[2]);
+          if (when < today) when = null;
+        }
       }
-      out.push({ label: d.label, when, left: Math.round((when - today) / DAY) });
+      if (!when) continue;
+      out.push({ label: d.label, when, left: Math.round((when - today) / DAY), age, note: d.note || '' });
     }
     return out.sort((x, y) => x.left - y.left);
   }
@@ -512,7 +523,7 @@
     lbIndex = (i + lbSet.length) % lbSet.length;
     const m = byId.get(lbSet[lbIndex]);
     $('#lb-n').textContent = `${lbIndex + 1} / ${lbSet.length}`;
-    $('#lb-date').textContent = fmtDate(m.date);
+    $('#lb-date').textContent = m.dq === 'unknown' ? '' : fmtDate(m.date);
     $('#lb-text').textContent = m.cap || '';
     stage.innerHTML = '<img alt="" class="ghost">';
     const ghost = stage.querySelector('img');
