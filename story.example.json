@@ -64,5 +64,33 @@
       "label": "她的生日",
       "date": "12-08"
     }
-  ]
+  ],
+  "seal": {
+    "svg": "<rect class=\"frame\" x=\"14\" y=\"14\" width=\"172\" height=\"172\" rx=\"30\"/><path class=\"st\" d=\"M50 60H150\"/><path class=\"drop\" d=\"M100 120c0 0 6 7.2 6 11.2a6 6 0 0 1-12 0c0-4 6-11.2 6-11.2z\"/>",
+    "chars": [
+      "甲",
+      "乙"
+    ],
+    "from": [
+      "名字一",
+      "名字二"
+    ],
+    "word": "甲乙",
+    "say": "jiǎ yǐ",
+    "text": "What the seal means, shown next to it."
+  },
+  "music": {
+    "file": "music/song.m4a",
+    "title": "Song title",
+    "sub": "Original piano · C major",
+    "about": "One line about the song.",
+    "notes": [
+      {
+        "t": 0,
+        "title": "Intro",
+        "text": "What is hidden in this part. Tapping it plays from here."
+      }
+    ],
+    "credit": "Credits for samples or performers."
+  }
 }

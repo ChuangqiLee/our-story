@@ -380,6 +380,27 @@ def build_mosaic(media, sources, favorites, state, key, vault):
             "ids": [m["s"] for m in pool]}
 
 
+def build_music(spec, base: Path, state, key, vault):
+    """Background music: one encrypted audio file plus its title and notes, all from story.json."""
+    if not spec or not spec.get("file"):
+        return None
+    path = (base / spec["file"]).resolve()
+    if not path.exists():
+        log("music file not found:", spec["file"])
+        return None
+    digest = sha256_file(path)
+    cached = state.get("music")
+    if not cached or cached["hash"] != digest or not (vault / f"{cached['id']}.bin").exists():
+        probe = json.loads(subprocess.run(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(path)],
+                                          capture_output=True, text=True, check=True).stdout)
+        cached = {"hash": digest, "id": secrets.token_hex(8), "dur": round(float(probe["format"]["duration"]), 2)}
+        (vault / f"{cached['id']}.bin").write_bytes(seal(key, path.read_bytes()))
+        state["music"] = cached
+        log("music:", path.name, f"{cached['dur']}s")
+    mime = {".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".webm": "audio/webm"}.get(path.suffix.lower(), "audio/mp4")
+    return {**{k: v for k, v in spec.items() if k != "file"}, "id": cached["id"], "dur": cached["dur"], "type": mime}
+
+
 # ---------- main ----------
 
 def load_json(path: Path, default):
@@ -560,6 +581,7 @@ def main():
             {**ms, "photo": ref(ms.get("photo"))} for ms in story.get("milestones", [])
         ],
         "letter": story.get("letter"),
+        "seal": story.get("seal"),
         "days": [expand_day(d) for d in story.get("days", [])],
         "hero": [by_name[n]["s"] for n in story.get("hero", []) if n in by_name],
         "places": places,
@@ -574,6 +596,10 @@ def main():
             for m in media
         ],
     }
+    music = build_music(story.get("music"), args.story.parent, state, key, vault)
+    if music:
+        manifest["music"] = music
+        used_blobs.add(music["id"])
     mosaic = build_mosaic(media, sources, story.get("favorites", []), state, key, vault)
     if mosaic:
         manifest["mosaic"] = mosaic

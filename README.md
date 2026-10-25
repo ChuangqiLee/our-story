@@ -13,6 +13,10 @@ Everything personal (names, dates, captions, the letter, every photo and video, 
 - `tools/make_map.py` – turns Natural Earth land (npm `world-atlas`, `land-50m.json`) into `docs/assets/land.json`, the dot grid behind the travel map
 - `story.example.json` – the shape of `story.json` (the real one is kept out of this repo). `hero` lists the slideshow photos, `places` names the spots photo GPS is matched to (only names and city-level centres reach the site), and a date starting with `~` marks a guessed date, shown to the month only.
 
+### Seal and music
+
+`seal.svg` holds the inner markup of a 200×200 SVG: a `.frame` rect, `.st` strokes (drawn in order) and `.drop` shapes that fall in at the end. It is shown after unlocking: stamped on the opening heart, in the top-left corner, in its own section and in the footer. `music.file` (relative to `story.json`) is encrypted like a photo; the page plays it after the password is entered, or on the first tap for a remembered device, and `music.notes` become a list that plays from each note's time `t` in seconds.
+
 ## Build
 
 ```sh
