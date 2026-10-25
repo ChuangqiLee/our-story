@@ -56,7 +56,7 @@
     const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password.trim().normalize('NFC')), 'PBKDF2', false, ['deriveKey']);
     return crypto.subtle.deriveKey(
       { name: 'PBKDF2', salt: fromB64(meta.salt), iterations: meta.iter, hash: 'SHA-256' },
-      base, { name: 'AES-GCM', length: 256 }, true, ['decrypt'],
+      base, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt'],
     );
   }
 
@@ -134,7 +134,7 @@
     const saved = store.get();
     if (saved && saved.salt === meta.salt) {
       try {
-        key = await crypto.subtle.importKey('raw', fromB64(saved.k), 'AES-GCM', false, ['decrypt']);
+        key = await crypto.subtle.importKey('raw', fromB64(saved.k), 'AES-GCM', false, ['encrypt', 'decrypt']);
         data = await readManifest(key);
         if (music.has() && music.wanted() && !(await music.canAutoplay())) await waitForEnter();
         open(true);
@@ -225,6 +225,7 @@
     weather(bd ? 'confetti' : days.some((d) => d.left === 0 && /周年/.test(d.label)) ? 'hearts'
       : [2, 3, 4].includes(month) ? 'petals' : [5, 6, 7].includes(month) ? 'fireflies' : [8, 9, 10].includes(month) ? 'leaves' : 'snow');
     setTimeout(() => lock.remove(), 1100);
+    cloud.sync();
   }
 
   /* ---------- helpers ---------- */
@@ -964,6 +965,7 @@
 
   /* 04 someday: a hundred things to do together, and a time capsule */
   const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+  const CLOUD = ic('<path d="M7 18.5h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.6 9.2 4.7 4.7 0 0 0 7 18.5z"/>');
   const SHARE = ic('<path d="M12 15V4.5M8 8.5l4-4 4 4"/><path d="M5.5 12.5V18a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-5.5"/>');
   function somedayHTML(p, things, favs) {
     const facts = [];
@@ -993,6 +995,7 @@
           <p class="kicker">Our ${things.length} things</p>
           <h2>情侣要一起做的 ${things.length} 件事</h2>
           <p class="lead">做过的，点一下打个勾，它就会暗下去；还亮着的，是接下来要一起去做的。</p>
+          <button class="bk-sync" id="bk-sync" type="button" data-s="off">${CLOUD}<span>开启自动同步</span></button>
         </div>
         <div class="bk-meter">
           <svg viewBox="0 0 120 120" aria-hidden="true">
@@ -1014,7 +1017,31 @@
           <span class="bk-no">${String(x.n).padStart(3, '0')}</span><span class="bk-t">${esc(x.t)}<small class="bk-d"></small></span><span class="bk-box">${CHECK}</span>
         </button></li>`).join('')}</ol>
       </section>`).join('')}</div>
-      <p class="bk-note">勾会记在这台手机或电脑上。点「同步给 TA」，把链接发给对方；对方打开，两边的勾就合在一起了。</p>
+      <p class="bk-note">开启自动同步后，打的勾会在每一台连上的手机和电脑之间自动同步。还没连上的设备，点「同步给 TA」把链接发过去，打开一次就连上了。</p>
+      <dialog class="sync-dlg" id="sync-dlg" aria-labelledby="sync-h">
+        <form method="dialog" class="sync-card">
+          <h3 id="sync-h">自动同步</h3>
+          <div class="sync-off">
+            <p>打的勾会加密以后，存进你 GitHub 账号里的一个私密 Gist。连上的手机和电脑都会自动同步，别人看不懂内容。</p>
+            <p>只要在一台设备上设置一次：</p>
+            <ol>
+              <li>点下面的按钮去 GitHub，Expiration 选 <b>No expiration</b>，拉到底点 <b>Generate token</b>。</li>
+              <li>复制生成的口令（ghp_ 开头），粘贴到这里，点「连上」。</li>
+              <li>再点「同步给 TA」，把链接发到其他手机和电脑，打开一次就都连上了。</li>
+            </ol>
+            <a class="sync-gh" href="https://github.com/settings/tokens/new?scopes=gist&amp;description=Our%20Story%20sync" target="_blank" rel="noopener">去 GitHub 生成口令</a>
+            <label class="sr-only" for="sync-token">同步口令</label>
+            <input id="sync-token" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="粘贴 ghp_ 开头的口令">
+            <p class="sync-msg" id="sync-msg" role="alert"></p>
+            <div class="sync-row"><button type="button" class="sync-go" id="sync-go">连上</button><button value="close" class="sync-x">取消</button></div>
+          </div>
+          <div class="sync-on">
+            <p>这台设备已经连上自动同步。<span id="sync-when"></span></p>
+            <p>还没连上的设备：点「同步给 TA」，把链接发过去，打开一次就连上了。</p>
+            <div class="sync-row"><button type="button" class="sync-go" id="sync-now">现在同步</button><button type="button" class="sync-x" id="sync-off">断开这台设备</button><button value="close" class="sync-x">关闭</button></div>
+          </div>
+        </form>
+      </dialog>
     </div></section>`;
   }
 
@@ -1103,11 +1130,12 @@
       }
       return out;
     };
-    // Whoever ticked (or unticked) a thing last wins.
+    // Whoever ticked (or unticked) a thing last wins; in the same minute, ticked wins, so every device settles on the same answer.
+    const newer = (a, b) => !b || a[1] > b[1] || (a[1] === b[1] && a[0] > b[0]);
     function merge(other) {
       let gained = 0;
       for (const [n, e] of Object.entries(other)) {
-        if (state[n] && state[n][1] >= e[1]) continue;
+        if (!newer(e, state[n])) continue;
         if (e[0] && !done(n)) gained += 1;
         state[n] = e;
       }
@@ -1150,7 +1178,8 @@
     }
 
     async function share() {
-      const url = `${location.origin}${location.pathname}#/someday?t=${encode()}`;
+      const join = await cloud.invite();
+      const url = `${location.origin}${location.pathname}#/someday?t=${encode()}${join ? `&k=${join}` : ''}`;
       try {
         if (navigator.share) { await navigator.share({ title: '我们的 100 件事', text: `我打了 ${count()} 个勾，点开同步一下`, url }); return; }
       } catch (e) {
@@ -1169,6 +1198,8 @@
       if (!root) return;
       // Opened from a link the other one sent: fold their ticks into ours.
       const link = /[?&]t=([0-9a-z]+)/.exec(location.hash);
+      const join = /[?&]k=([A-Za-z0-9_-]+)/.exec(location.hash);
+      if (join) cloud.accept(join[1]);
       if (link) {
         const gained = merge(decode(link[1]));
         history.replaceState(null, '', `${location.pathname}${location.search}#/someday`);
@@ -1181,9 +1212,10 @@
         if (!el) return;
         const n = Number(el.dataset.n);
         const v = done(n) ? 0 : 1;
-        state[n] = [v, minute()];
+        state[n] = [v, Math.max(minute(), state[n] ? state[n][1] + 1 : 0)]; // a change always outranks the one before it
         save();
         paint();
+        cloud.soon();
         el.classList.remove('pop');
         void el.offsetWidth;
         el.classList.add('pop');
@@ -1198,12 +1230,185 @@
         root.dataset.f = b.dataset.f;
       }));
       $('#bk-share').addEventListener('click', share);
+      cloud.setup();
       // Ticked in another tab on this device.
       addEventListener('storage', (e) => { if (e.key === LS) { state = null; load(); paint(); } });
     }
 
-    return { items, count: () => { load(); return count(); }, setup };
+    // From the synced copy: fold its ticks in; and whether ours has anything it lacks.
+    function absorb(other) { load(); const gained = merge(other); paint(); return gained; }
+    const ahead = (other) => { load(); return Object.keys(state).some((n) => newer(state[n], other[n])); };
+    const snapshot = () => { load(); return { ...state }; };
+
+    return { items, count: () => { load(); return count(); }, setup, absorb, ahead, snapshot };
   })();
+
+  /* ---------- the 100 things, synced: a sealed copy in a private gist that every connected device reads and writes ---------- */
+  // The token is one the owner made for this (gist access only) and pasted in, or received sealed in a 同步给 TA link.
+  // It stays in this device's storage and is only ever sent to api.github.com.
+  const cloud = (() => {
+    const LS = 'ourstory.sync.v1';
+    const FILE = 'our-story-100.bin';
+    const API = 'https://api.github.com';
+    let cfg = null; // { t: token, g: gist id }
+    let busy = null;
+    let again = false;
+    let timer = 0;
+    let last = 0;
+    let shown = 'off';
+    const conf = () => {
+      if (!cfg) { try { cfg = JSON.parse(localStorage.getItem(LS)) || {}; } catch (e) { cfg = {}; } }
+      return cfg;
+    };
+    const keep = () => { try { localStorage.setItem(LS, JSON.stringify(cfg)); } catch (e) { /* private mode */ } };
+    const on = () => !!conf().t;
+
+    async function gh(path, opts = {}) {
+      const r = await fetch(API + path, {
+        ...opts,
+        cache: 'no-store',
+        headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${conf().t}`, ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
+      });
+      if (!r.ok) { const e = new Error(`GitHub ${r.status}`); e.code = r.status; throw e; }
+      return r.json();
+    }
+    async function sealJSON(obj) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(obj))));
+      const u = new Uint8Array(12 + ct.length);
+      u.set(iv);
+      u.set(ct, 12);
+      return toB64(u);
+    }
+    const openJSON = async (b64) => JSON.parse(new TextDecoder().decode(await decrypt(key, fromB64(b64.trim()))));
+    const url64 = (b64) => b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const from64 = (u) => u.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((u.length + 3) % 4);
+
+    // Our gist: the one remembered, else the one holding our file, else a new one.
+    async function gist() {
+      const c = conf();
+      if (c.g) {
+        try { return await gh(`/gists/${c.g}`); } catch (e) { if (e.code !== 404) throw e; c.g = ''; }
+      }
+      for (let page = 1; page <= 5; page += 1) {
+        const list = await gh(`/gists?per_page=100&page=${page}`);
+        const hit = list.find((x) => x.files && x.files[FILE]);
+        if (hit) { c.g = hit.id; keep(); return gh(`/gists/${hit.id}`); }
+        if (list.length < 100) break;
+      }
+      const made = await gh('/gists', {
+        method: 'POST',
+        body: JSON.stringify({ description: 'Our Story · 100 件事的加密同步（请勿删除）', public: false, files: { [FILE]: { content: await sealJSON({ v: 1, s: {} }) } } }),
+      });
+      c.g = made.id;
+      keep();
+      return made;
+    }
+
+    async function round() {
+      const g = await gist();
+      const f = g.files && g.files[FILE];
+      let theirs = {};
+      if (f && f.content) { try { theirs = (await openJSON(f.content)).s || {}; } catch (e) { theirs = {}; } }
+      const gained = bucket.absorb(theirs);
+      if (bucket.ahead(theirs)) {
+        await gh(`/gists/${g.id}`, { method: 'PATCH', body: JSON.stringify({ files: { [FILE]: { content: await sealJSON({ v: 1, s: bucket.snapshot() }) } } }) });
+      }
+      return gained;
+    }
+
+    function sync() {
+      if (!on() || !key) return Promise.resolve();
+      if (busy) { again = true; return busy; }
+      show('busy');
+      busy = (async () => {
+        try {
+          const gained = await round();
+          last = Date.now();
+          show('on');
+          if (gained && $('#bk-groups')) toast(`从另一台设备同步来 ${gained} 个勾`);
+        } catch (e) {
+          show(e.code === 401 ? 'bad' : 'error');
+        }
+        busy = null;
+        if (again) { again = false; sync(); }
+      })();
+      return busy;
+    }
+    const soon = () => { clearTimeout(timer); timer = setTimeout(sync, 1200); };
+
+    const LABEL = { off: '开启自动同步', busy: '正在同步…', on: '已自动同步', error: '这会儿没连上，稍后自动重试', bad: '同步口令失效了，点这里重新设置' };
+    function show(s) {
+      shown = s;
+      const b = $('#bk-sync');
+      if (b) { b.dataset.s = s; b.querySelector('span').textContent = LABEL[s]; }
+      const w = $('#sync-when');
+      if (w) w.textContent = last ? `上次同步：${new Date(last).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '';
+    }
+
+    // For a 同步给 TA link: the token, sealed with our key, so the other device joins by opening it once.
+    async function invite() {
+      if (!on() || !key) return '';
+      try { return url64(await sealJSON({ t: conf().t, g: conf().g || '' })); } catch (e) { return ''; }
+    }
+    async function accept(code) {
+      try {
+        const got = await openJSON(from64(code));
+        if (!got.t) return;
+        const fresh = got.t !== conf().t;
+        cfg = { t: got.t, g: got.g || '' };
+        keep();
+        await sync();
+        if (fresh && shown === 'on') setTimeout(() => toast('这台设备也连上自动同步了'), 2600);
+      } catch (e) { /* not ours, or broken on the way */ }
+    }
+
+    function setup() {
+      const b = $('#bk-sync');
+      const dlg = $('#sync-dlg');
+      if (!b || !dlg) return;
+      show(on() ? (shown === 'off' ? 'on' : shown) : 'off');
+      const msg = $('#sync-msg');
+      b.addEventListener('click', () => {
+        dlg.classList.toggle('is-on', on() && shown !== 'bad');
+        msg.textContent = '';
+        show(shown);
+        if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+      });
+      $('#sync-go').addEventListener('click', async () => {
+        const t = $('#sync-token').value.trim();
+        if (!/^(ghp_|github_pat_)\w{20,}$/.test(t)) { msg.textContent = '这不像 GitHub 口令，应该是 ghp_ 开头的一长串。'; return; }
+        cfg = { t, g: '' };
+        keep();
+        msg.textContent = '正在连接…';
+        await sync();
+        if (shown === 'on') {
+          $('#sync-token').value = '';
+          dlg.close();
+          toast('连上了！再点「同步给 TA」，把其他设备也连上');
+        } else {
+          msg.textContent = shown === 'bad' ? '口令不对或已失效，再检查一下。' : '暂时连不上 GitHub，稍后再试。';
+          if (shown === 'bad') { cfg = {}; keep(); show('off'); }
+        }
+      });
+      $('#sync-now').addEventListener('click', () => { sync(); });
+      $('#sync-off').addEventListener('click', () => {
+        cfg = {};
+        keep();
+        show('off');
+        dlg.close();
+        toast('这台设备不再自动同步，勾还留在这里');
+      });
+    }
+
+    // Catch up when the site opens, when it comes back to the front, and every minute while it is open.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+    setInterval(() => { if (!document.hidden) sync(); }, 60000);
+    addEventListener('storage', (e) => { if (e.key === LS) { cfg = null; show(on() ? 'on' : 'off'); } });
+
+    return { sync, soon, invite, accept, setup };
+  })();
+
 
   /* ---------- page routing: #/time, #/map, #/someday ---------- */
   let current = null;
