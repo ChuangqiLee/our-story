@@ -239,8 +239,13 @@
       for (const it of items) {
         const y = it.date.slice(0, 4);
         if (y !== lastYear) { html += `<div class="tl-year reveal"><span>${y}</span></div>`; lastYear = y; }
-        html += it.kind === 'milestone' ? milestoneHTML(it, flip) : chapterHTML(it, flip);
-        flip = !flip;
+        if (it.kind === 'milestone') {
+          html += milestoneHTML(it, flip);
+          if (it.ms.photo) flip = !flip;
+        } else {
+          html += chapterHTML(it, flip);
+          flip = !flip;
+        }
       }
       html += '</div></div></section>';
     }
@@ -350,13 +355,13 @@
   function milestoneHTML(it, flip) {
     const ms = it.ms;
     const m = ms.photo && byId.get(ms.photo);
-    return `<article class="tl-item milestone reveal${flip ? ' flip' : ''}">
+    return `<article class="tl-item milestone reveal${m ? (flip ? ' flip' : '') : ' solo'}">
       <div class="tl-text">
         <div class="tl-date">${fmtDate(ms.date)}</div>
         <h3 class="tl-title">${esc(ms.title || '')}</h3>
         ${ms.text ? `<p class="tl-body">${esc(ms.text)}</p>` : ''}
       </div>
-      <div class="tl-media">${m ? `<div class="collage n1">${photoButton(m, { set: 'all' })}</div>` : ''}</div>
+      ${m ? `<div class="tl-media"><div class="collage n1">${photoButton(m, { set: 'all' })}</div></div>` : ''}
     </article>`;
   }
 
