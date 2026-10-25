@@ -583,8 +583,8 @@ def main():
         "letter": story.get("letter"),
         "firsts": [{**f, "photo": ref(f.get("photo"))} for f in story.get("firsts", [])],
         "bucket": story.get("bucket"),
-        # Where the page saves the 100-things ticks (a GitHub branch); its token only ever ships encrypted.
-        "sync": story.get("sync"),
+        # One photo a year, by file name; years left out get the favourite nearest the anniversary.
+        "yearly": {y: ref(n) for y, n in story.get("yearly", {}).items() if ref(n)},
         "capsule": story.get("capsule"),
         "seal": story.get("seal"),
         "days": [expand_day(d) for d in story.get("days", [])],
