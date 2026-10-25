@@ -1,15 +1,68 @@
 {
-  "lock": { "title": "Our Story", "subtitle": "只属于我们两个人的地方", "hint": "" },
-  "names": ["A", "B"],
+  "lock": {
+    "title": "Our Story",
+    "subtitle": "只属于我们两个人的地方",
+    "hint": ""
+  },
+  "names": [
+    "A",
+    "B"
+  ],
   "since": "2023-05-20",
   "tagline": "一句写在首页的话",
   "cover": "IMG_0001.HEIC",
-  "favorites": ["IMG_0001.HEIC"],
-  "exclude": ["IMG_0002.HEIC"],
-  "dates": { "IMG_0003.PNG": "2023-06-01T12:00:00" },
-  "captions": { "IMG_0001.HEIC": "照片下面的一句话" },
-  "chapters": { "2023-05": { "title": "这个月的标题", "text": "这个月的故事" } },
-  "milestones": [ { "date": "2023-05-20", "title": "我们在一起了", "text": "", "photo": "IMG_0001.HEIC" } ],
-  "letter": { "title": "写给你", "body": "第一段\n\n第二段", "sign": "— A" },
-  "days": [ { "label": "她的生日", "date": "12-08" } ]
+  "hero": [
+    "IMG_0001.HEIC",
+    "IMG_0004.HEIC"
+  ],
+  "favorites": [
+    "IMG_0001.HEIC"
+  ],
+  "exclude": [
+    "IMG_0002.HEIC"
+  ],
+  "dates": {
+    "IMG_0003.PNG": "2023-06-01T12:00:00",
+    "IMG_0005.JPG": "~2023-07-02"
+  },
+  "places": [
+    {
+      "name": "重庆",
+      "en": "Chongqing",
+      "lat": 29.56,
+      "lon": 106.55,
+      "km": 50
+    }
+  ],
+  "placeOf": {
+    "IMG_0006.JPG": "重庆"
+  },
+  "captions": {
+    "IMG_0001.HEIC": "照片下面的一句话"
+  },
+  "chapters": {
+    "2023-05": {
+      "title": "这个月的标题",
+      "text": "这个月的故事"
+    }
+  },
+  "milestones": [
+    {
+      "date": "2023-05-20",
+      "title": "我们在一起了",
+      "text": "",
+      "photo": "IMG_0001.HEIC"
+    }
+  ],
+  "letter": {
+    "title": "写给你",
+    "body": "第一段\n\n第二段",
+    "sign": "— A"
+  },
+  "days": [
+    {
+      "label": "她的生日",
+      "date": "12-08"
+    }
+  ]
 }
